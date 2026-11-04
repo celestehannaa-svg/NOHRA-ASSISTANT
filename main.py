@@ -37,7 +37,7 @@ def detect_department(text):
 async def add_to_fish_sheet(text):
     env = get_env()
     if not env["GOOGLE_CREDS"]:
-        return f"🐟 Fahmet! You wrote:\n{text}\n\nSheet not connected yet! Add GOOGLE_CREDENTIALS_JSON in Render. I understood your format, will add exactly like your sheet once connected!"
+        return "Fahmet! Sheet not connected yet - add GOOGLE_CREDENTIALS_JSON in Render"
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -49,162 +49,164 @@ async def add_to_fish_sheet(text):
         try:
             ws = sheet.worksheet("Fish Supplies 2026")
         except:
-            try:
-                ws = sheet.worksheet("Fish Supplies 2026 ")
-            except:
-                ws = sheet.get_worksheet(0)
-        
-        lines = text.strip().split('\n')
-        current_supplier = ""
+            ws = sheet.get_worksheet(0)
+        lines = text.strip().split("\n")
+        current_supplier = "Nohra"
         date_str = ""
         where = "Broumana"
         week = ""
-        
         first_lower = lines[0].lower() if lines else ""
-        date_match = re.search(r'(\d+)\s*nov', first_lower)
-        if date_match:
-            day = date_match.group(1)
-            date_str = f"{day} Oct"
-            week = f"{day} Oct"
+        dm = re.search(r"(\d+)\s*nov", first_lower)
+        if dm:
+            day = dm.group(1)
+            date_str = day + " Nov"
+            week = date_str
         else:
             from datetime import datetime
             date_str = datetime.now().strftime("%d %b")
             week = date_str
-        
         if "broumana" in first_lower:
             where = "Broumana"
         elif "antelias" in first_lower:
             where = "Antelias"
         elif "adma" in first_lower:
             where = "Adma"
-        
         if "nohra" in first_lower:
             current_supplier = "Nohra"
         elif "bernard" in first_lower:
             current_supplier = "Bernard"
-        
-        added_count = 0
+        added = 0
         for line in lines:
-            orig_line = line.strip()
-            if not orig_line:
+            orig = line.strip()
+            if not orig:
                 continue
-            low = orig_line.lower()
-            
-            if low.startswith("zedle") and "kilo" not in low.split()[:4]:
-                if ":" in orig_line:
-                    after = orig_line.split(":",1)[1].strip()
-                    if "kilo" in after.lower():
-                        orig_line = after
-                        low = after.lower()
-                    else:
-                        if "nohra" in orig_line.split(":")[0].lower():
-                            current_supplier = "Nohra"
-                        elif "bernard" in orig_line.split(":")[0].lower():
-                            current_supplier = "Bernard"
-                        continue
+            low = orig.lower()
+            if ":" in orig and "kilo" not in low[:20]:
+                parts = orig.split(":",1)
+                head = parts[0].lower()
+                if "bernard" in head:
+                    current_supplier = "Bernard"
+                if "nohra" in head:
+                    current_supplier = "Nohra"
+                if len(parts)>1 and "kilo" in parts[1].lower():
+                    orig = parts[1].strip()
+                    low = orig.lower()
                 else:
                     continue
-            
-            if ":" in orig_line:
-                header = orig_line.split(":")[0].strip()
-                if len(header.split()) <= 2:
-                    lh = header.lower()
-                    if "bernard" in lh:
-                        current_supplier = "Bernard"
-                        rest = ":".join(orig_line.split(":")[1:]).strip()
-                        if rest:
-                            orig_line = rest
-                            low = rest.lower()
-                        else:
-                            continue
-                    elif "nohra" in lh:
-                        current_supplier = "Nohra"
-                        rest = ":".join(orig_line.split(":")[1:]).strip()
-                        if rest:
-                            orig_line = rest
-                            low = rest.lower()
-                        else:
-                            continue
-            
-            kg_match = re.search(r'(\d+(?:\.\d+)?)\s*k', low)
-            if not kg_match:
+            km = re.search(r"(\d+(?:\.\d+)?)\s*k", low)
+            if not km:
                 continue
-            
-            kg = kg_match.group(1)
-            fish_name_raw = orig_line[:orig_line.lower().find(kg_match.group(0).lower())].strip()
-            if ":" in fish_name_raw:
-                fish_name_raw = fish_name_raw.split(":")[-1].strip()
-            words = fish_name_raw.split()
-            filtered = [w for w in words if w.lower() not in ["nohra","bernard","ghassan","broumana","antelias","adma","zedle","samak"]]
-            fish_name = " ".join(filtered[-2:]) if len(filtered) >= 2 else (filtered[-1] if filtered else "Fish")
-            fish_name_sheet = fish_name.upper()
-            
+            kg = km.group(1)
+            fish_raw = orig[: orig.lower().find(km.group(0).lower())].strip()
+            if ":" in fish_raw:
+                fish_raw = fish_raw.split(":")[-1].strip()
+            fish_clean = fish_raw.upper()
+            for bad in ["NOHRA","BERNARD","GHASSAN","BROUMANA","ANTELIAS","ADMA","ZEDLE","SAMAK"]:
+                fish_clean = fish_clean.replace(bad,"")
+            fish_clean = fish_clean.strip()
             price = ""
-            price_match = re.search(r'se3er\s*unit\s*(\d+(?:\.\d+)?)\$?|(\d+(?:\.\d+)?)\$\s*unit|(\d+(?:\.\d+)?)\$', low)
-            if price_match:
-                price = price_match.group(1) or price_match.group(2) or price_match.group(3)
-                price = f"${price}" if price else ""
-            
-            all_values = ws.get_all_values()
-            next_row = len(all_values) + 1
-            
-            row = [""] * 13
-            row[0] = week
-            row[1] = date_str
-            row[2] = where
-            row[5] = current_supplier
-            row[6] = fish_name_sheet
-            row[7] = price
-            row[9] = kg
-            
-            ws.update(f"A{next_row}:M{next_row}", [row])
-            added_count += 1
-        
-        if added_count == 0:
-            return f"🤔 Ma fhemet: {text}"
-        
-        return f"✅ Zedle {added_count} samak 3al sheet EXACTLY like you write!\n📅 {date_str} {where}\n🏭 {current_supplier}\n🔗 https://docs.google.com/spreadsheets/d/{FISH_SHEET_ID}"
-    
+            pm = re.search(r"(\d+(?:\.\d+)?)\$", low)
+            if pm:
+                price = "$" + pm.group(1)
+            all_vals = ws.get_all_values()
+            nr = len(all_vals) + 1
+            row = [""]*13
+            row[0]=week
+            row[1]=date_str
+            row[2]=where
+            row[5]=current_supplier
+            row[6]=fish_clean
+            row[7]=price
+            row[9]=kg
+            ws.update(f"A{nr}:M{nr}", [row])
+            added+=1
+        return f"✅ Zedle {added} samak 3al sheet! {date_str} {where} {current_supplier} https://docs.google.com/spreadsheets/d/{FISH_SHEET_ID}"
     except Exception as e:
         import traceback; traceback.print_exc()
-        return f"❌ Sheet error: {str(e)[:500]}"
+        return f"Sheet error: {str(e)[:400]}"
 
 async def ai_reply(text, department="general"):
     env = get_env()
     prompts = {
-        "fish": f"You are Nohra Fish Business Manager. Expert in fish supply Nohra/Bernard, Ghassan broker. Sheet ID {FISH_SHEET_ID}. Understand Lebanese Arabizi fish: ghobbos, ajej, bra2, lo2os, frafir, sultan, etc. Understand format: 'Zedle samak 5nov broumana nohra: ghobbos 5 kilo se3er unit 5$'. Reply EXACTLY like user writes: if user writes Arabizi, reply Arabizi; if Arabic, reply Arabic. Don't translate fish names. Be short, friendly.",
-        "celeste": "You are Celeste Cosmetics Manager. Expert in makeup, skincare, beauty. Reply same language as user. Short, elegant.",
-        "english": "You are English Teaching Assistant. Help with English/Arabic/Lebanese translation, grammar. Encouraging.",
-        "secretary": "You are Personal Secretary. Help with calendar, meetings, reminders. Professional, organized.",
-        "general": "You are Nohra AI Assistant - 4 depts: Fish (ghobbos, ajej, bra2, lo2os), Celeste Cosmetics, English Teaching, Secretary. Detect dept. Reply same language user uses: English, Arabic, Lebanese, Arabizi. Write EXACTLY like user writes. Short friendly."
+        "fish": "You are Nohra Fish Manager. Expert in ghobbos, ajej, bra2, lo2os, frafir, sultan. Understand Lebanese Arabizi. Reply EXACTLY like user writes. If user writes Arabizi reply Arabizi.",
+        "celeste": "You are Celeste Cosmetics Manager. Elegant.",
+        "english": "You are English Teacher. Helpful.",
+        "secretary": "You are Secretary. Organized.",
+        "general": "You are Nohra AI - 4 depts: Fish, Celeste, English, Secretary. Detect dept. Reply same language as user."
     }
-    system_prompt = prompts.get(department, prompts["general"])
-    reply = None
+    sp = prompts.get(department, prompts["general"])
+    rep = None
     if env["OPENAI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=25) as c:
-                r = await c.post("https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"},
-                    json={"model": "gpt-4o-mini","messages": [{"role": "system","content": system_prompt},{"role": "user","content": text}]})
-                data = r.json()
-                if "choices" in data:
-                    reply = data["choices"][0]["message"]["content"]
+                r = await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"}, json={"model":"gpt-4o-mini","messages":[{"role":"system","content":sp},{"role":"user","content":text}]})
+                j=r.json()
+                if "choices" in j:
+                    rep=j["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"OpenAI error: {e}")
-    if not reply and env["GEMINI_KEY"]:
+            print(f"OpenAI {e}")
+    if not rep and env["GEMINI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={env['GEMINI_KEY']}",json={"contents": [{"parts": [{"text": f"{system_prompt}\nUser: {text}"}]}]})
-                data = r.json()
-                if "candidates" in data:
-                    reply = data["candidates"][0]["content"]["parts"][0]["text"]
+                r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={env['GEMINI_KEY']}", json={"contents":[{"parts":[{"text": sp+"\nUser: "+text}]}]})
+                j=r.json()
+                if "candidates" in j:
+                    rep=j["candidates"][0]["content"]["parts"][0]["text"]
         except Exception as e:
-            print(f"Gemini error: {e}")
-    return reply
+            print(f"Gemini {e}")
+    return rep
 
 app = FastAPI()
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
     env = get_env()
-    return f"<html><body style='font-family:sans-serif;padding:20
+    html = """
+    <html><body style="font-family:sans-serif;padding:20px">
+    <h2>Nohra AI - 4 Depts OK</h2>
+    <p>Fish Sheet: 1_U7Mz0eKj8x3nWDvCSkRXkDgyYIEhYupJNJ0-DSskss</p>
+    <p>has_openai: """ + str(bool(env["OPENAI_KEY"])) + """</p>
+    <p>has_sheets: """ + str(bool(env["GOOGLE_CREDS"])) + """</p>
+    <p>has_token: """ + str(bool(env["WHATSAPP_TOKEN"])) + """</p>
+    </body></html>
+    """
+    return HTMLResponse(content=html)
+
+@app.get("/webhook/whatsapp")
+async def verify_webhook(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return PlainTextResponse(content=challenge or "", status_code=200)
+    from fastapi import HTTPException
+    raise HTTPException(status_code=403)
+
+@app.post("/webhook/whatsapp")
+async def receive_message(request: Request):
+    body = await request.json()
+    print(body)
+    try:
+        val = body["entry"][0]["changes"][0]["value"]
+        if "messages" not in val:
+            return {"ok": True}
+        msg = val["messages"][0]
+        from_num = msg["from"]
+        text = msg["text"]["body"] if msg.get("type")=="text" else "Hello"
+        dept = detect_department(text)
+        print(f"Dept {dept} {text}")
+        if dept=="fish" and ("kg" in text.lower() or "kilo" in text.lower() or "zedle" in text.lower()):
+            reply = await add_to_fish_sheet(text)
+        else:
+            reply = await ai_reply(text, dept)
+        if not reply:
+            reply = "Nohra AI: " + text[:1000]
+        env = get_env()
+        if env["WHATSAPP_TOKEN"]:
+            async with httpx.AsyncClient(timeout=20) as c2:
+                await c2.post(f"https://graph.facebook.com/v19.0/{env['PHONE_ID']}/messages", headers={"Authorization": f"Bearer {env['WHATSAPP_TOKEN']}"}, json={"messaging_product":"whatsapp","to":from_num,"type":"text","text":{"body": reply[:3000]}})
+        print(f"Sent {reply}")
+        return {"sent": True}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {"error": str(e)}
