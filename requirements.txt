@@ -1,5 +1,8 @@
 fastapi
 uvicorn
-python-dotenv
 httpx
-python-multipart
+python-dotenv
+gspread
+google-auth
+google-auth-oauthlib
+openai
