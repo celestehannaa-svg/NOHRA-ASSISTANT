@@ -1,7 +1,43 @@
+import os, json, re
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse, HTMLResponse
+from dotenv import load_dotenv
+import httpx
+load_dotenv()
+
+VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "nohra_verify_2024")
+FISH_SHEET_ID = "1_U7Mz0eKj8x3nWDvCSkRXkDgyYIEhYupJNJ0-DSskss"
+
+def get_env():
+    load_dotenv(override=True)
+    return {
+        "WHATSAPP_TOKEN": os.getenv("WHATSAPP_TOKEN",""),
+        "PHONE_ID": os.getenv("WHATSAPP_PHONE_NUMBER_ID","1349671541570540"),
+        "GEMINI_KEY": os.getenv("GEMINI_API_KEY",""),
+        "OPENAI_KEY": os.getenv("OPENAI_API_KEY",""),
+        "GOOGLE_CREDS": os.getenv("GOOGLE_CREDENTIALS_JSON",""),
+    }
+
+def detect_department(text):
+    t = text.lower()
+    fish_keywords = ["fish","kg","kilo","ghobbos","ajej","bra2","lo2os","frafir","sultan","samak","nohra","bernard","ghassan","broumana","antelias","adma","zedle"]
+    celeste_keywords = ["celeste","cosmetic","makeup","skincare","beauty"]
+    english_keywords = ["english","teach","lesson","grammar","translate"]
+    secretary_keywords = ["calendar","meeting","reminder","call","email","schedule"]
+    if any(k in t for k in fish_keywords):
+        return "fish"
+    if any(k in t for k in celeste_keywords):
+        return "celeste"
+    if any(k in t for k in english_keywords):
+        return "english"
+    if any(k in t for k in secretary_keywords):
+        return "secretary"
+    return "general"
+
 async def add_to_fish_sheet(text):
     env = get_env()
     if not env["GOOGLE_CREDS"]:
-        return f"🐟 Fahmet! You wrote:\n{text}\n\nBut Sheet not connected yet! Add GOOGLE_CREDENTIALS_JSON in Render. I understood {len(text.split())} words. Once connected, I will add exactly as you write!"
+        return f"🐟 Fahmet! You wrote:\n{text}\n\nSheet not connected yet! Add GOOGLE_CREDENTIALS_JSON in Render. I understood your format, will add exactly like your sheet once connected!"
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -11,140 +47,164 @@ async def add_to_fish_sheet(text):
         client = gspread.authorize(creds)
         sheet = client.open_by_key(FISH_SHEET_ID)
         try:
-            ws = sheet.worksheet("Fish Log")
+            ws = sheet.worksheet("Fish Supplies 2026")
         except:
-            ws = sheet.add_worksheet(title="Fish Log", rows=1000, cols=20)
-            ws.append_row(["Date","Supplier","Fish Type","KG","Price Unit","Total","Location","Original Text","Added via"])
-
-        # Parse your format: multi-line, suppliers as headers
-        # Example: "Zedle samak 5nov broumana nohra: ghobbos 5 kilo se3er unit 5$"
+            try:
+                ws = sheet.worksheet("Fish Supplies 2026 ")
+            except:
+                ws = sheet.get_worksheet(0)
+        
         lines = text.strip().split('\n')
         current_supplier = ""
-        date_info = ""
-        location = ""
-        added_rows = []
+        date_str = ""
+        where = "Broumana"
+        week = ""
         
-        # Extract date and location from first line
-        first_line = lines[0].lower() if lines else ""
-        if "nov" in first_line or "broumana" in first_line or "zedle" in first_line:
-            # Extract date like 5nov
-            date_match = re.search(r'(\d+)\s*nov', first_line)
-            if date_match:
-                date_info = f"2026-11-{date_match.group(1)}"
-            if "broumana" in first_line:
-                location = "Broumana"
-            # Extract supplier from first line if "nohra:" in it
-            if "nohra" in first_line:
-                current_supplier = "Nohra"
-            elif "bernard" in first_line:
-                current_supplier = "Bernard"
+        first_lower = lines[0].lower() if lines else ""
+        date_match = re.search(r'(\d+)\s*nov', first_lower)
+        if date_match:
+            day = date_match.group(1)
+            date_str = f"{day} Oct"
+            week = f"{day} Oct"
+        else:
+            from datetime import datetime
+            date_str = datetime.now().strftime("%d %b")
+            week = date_str
         
-        from datetime import datetime
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        if not date_info:
-            date_info = now_str
-
+        if "broumana" in first_lower:
+            where = "Broumana"
+        elif "antelias" in first_lower:
+            where = "Antelias"
+        elif "adma" in first_lower:
+            where = "Adma"
+        
+        if "nohra" in first_lower:
+            current_supplier = "Nohra"
+        elif "bernard" in first_lower:
+            current_supplier = "Bernard"
+        
+        added_count = 0
         for line in lines:
-            line = line.strip()
-            if not line:
+            orig_line = line.strip()
+            if not orig_line:
                 continue
-            low = line.lower()
+            low = orig_line.lower()
             
-            # Check if line is supplier header: "Bernard:" or "nohra:"
-            if ":" in line and len(line.split(":")[0].strip().split()) <= 2:
-                header = line.split(":")[0].lower()
-                if "nohra" in header:
-                    current_supplier = "Nohra"
-                    # Also parse fish after colon in same line
-                    rest = ":".join(line.split(":")[1:]).strip()
-                    if rest:
-                        line = rest
-                        low = rest.lower()
+            if low.startswith("zedle") and "kilo" not in low.split()[:4]:
+                if ":" in orig_line:
+                    after = orig_line.split(":",1)[1].strip()
+                    if "kilo" in after.lower():
+                        orig_line = after
+                        low = after.lower()
                     else:
-                        continue
-                elif "bernard" in header:
-                    current_supplier = "Bernard"
-                    rest = ":".join(line.split(":")[1:]).strip()
-                    if rest:
-                        line = rest
-                        low = rest.lower()
-                    else:
-                        continue
-                elif "ghassan" in header:
-                    current_supplier = "Ghassan"
-                    continue
-            
-            # Skip lines that are just "Zedle samak..."
-            if low.startswith("zedle") and "kilo" not in low.split()[:5]:
-                # This line might contain fish after colon
-                if ":" in line:
-                    parts = line.split(":",1)
-                    if len(parts) > 1 and "kilo" in parts[1].lower():
-                        line = parts[1]
-                        low = line.lower()
-                    else:
+                        if "nohra" in orig_line.split(":")[0].lower():
+                            current_supplier = "Nohra"
+                        elif "bernard" in orig_line.split(":")[0].lower():
+                            current_supplier = "Bernard"
                         continue
                 else:
                     continue
             
-            # Now parse fish line: e.g. "ghobbos 5 kilo se3er unit 5$" or "Ajej 30 kilo 7$ unit" or "Lo2os 3kilo"
-            # Find fish name - first word that is not number/kg/price
-            # Your fish: ghobbos, ajej, frafir, lo2os, bra2, sultan, etc.
-            kg_match = re.search(r'(\d+(?:\.\d+)?)\s*k(?:ilo)?', low)
+            if ":" in orig_line:
+                header = orig_line.split(":")[0].strip()
+                if len(header.split()) <= 2:
+                    lh = header.lower()
+                    if "bernard" in lh:
+                        current_supplier = "Bernard"
+                        rest = ":".join(orig_line.split(":")[1:]).strip()
+                        if rest:
+                            orig_line = rest
+                            low = rest.lower()
+                        else:
+                            continue
+                    elif "nohra" in lh:
+                        current_supplier = "Nohra"
+                        rest = ":".join(orig_line.split(":")[1:]).strip()
+                        if rest:
+                            orig_line = rest
+                            low = rest.lower()
+                        else:
+                            continue
+            
+            kg_match = re.search(r'(\d+(?:\.\d+)?)\s*k', low)
             if not kg_match:
                 continue
             
             kg = kg_match.group(1)
+            fish_name_raw = orig_line[:orig_line.lower().find(kg_match.group(0).lower())].strip()
+            if ":" in fish_name_raw:
+                fish_name_raw = fish_name_raw.split(":")[-1].strip()
+            words = fish_name_raw.split()
+            filtered = [w for w in words if w.lower() not in ["nohra","bernard","ghassan","broumana","antelias","adma","zedle","samak"]]
+            fish_name = " ".join(filtered[-2:]) if len(filtered) >= 2 else (filtered[-1] if filtered else "Fish")
+            fish_name_sheet = fish_name.upper()
             
-            # Fish type is text before kg
-            fish_part = low[:kg_match.start()].strip()
-            # Remove numbers and common words
-            fish_type = fish_part
-            # Clean fish type - take first 1-2 words
-            fish_type = re.sub(r'^\d+\s*', '', fish_type)  # remove leading numbers
-            fish_type = fish_type.strip()
-            if not fish_type:
-                fish_type = "fish"
-            
-            # Keep original fish name exactly as user wrote (preserve case from original line)
-            # Find fish name in original line before kg
-            orig_kg_pos = re.search(r'(\d+(?:\.\d+)?)\s*k', line, re.IGNORECASE)
-            if orig_kg_pos:
-                orig_fish = line[:orig_kg_pos.start()].strip()
-                # If original has colon, take after last colon or take last words
-                if ":" in orig_fish:
-                    orig_fish = orig_fish.split(":")[-1].strip()
-                # Take last 1-2 words as fish name
-                words = orig_fish.split()
-                if words:
-                    fish_type = " ".join(words[-2:]) if len(words) >= 2 else words[-1]
-                    # Remove if it's supplier name
-                    if fish_type.lower() in ["nohra","bernard","ghassan","broumana","zedle","samak"]:
-                        fish_type = "fish"
-            
-            # Price: se3er unit 5$ or 7$ unit or 5$
             price = ""
             price_match = re.search(r'se3er\s*unit\s*(\d+(?:\.\d+)?)\$?|(\d+(?:\.\d+)?)\$\s*unit|(\d+(?:\.\d+)?)\$', low)
             if price_match:
                 price = price_match.group(1) or price_match.group(2) or price_match.group(3)
+                price = f"${price}" if price else ""
             
-            total = ""
-            if kg and price:
-                try:
-                    total = str(float(kg) * float(price))
-                except:
-                    pass
+            all_values = ws.get_all_values()
+            next_row = len(all_values) + 1
             
-            # Preserve exact original line
-            row = [date_info, current_supplier, fish_type, kg, price, total, location, line, "WhatsApp"]
-            ws.append_row(row)
-            added_rows.append(f"• {fish_type} {kg}kg {price}$ ({current_supplier})")
-
-        if not added_rows:
-            return f"🤔 Ma fhemet ktir: {text}\nTry like: 'ghobbos 5 kilo 5$' or 'nohra: ghobbos 5 kilo'"
+            row = [""] * 13
+            row[0] = week
+            row[1] = date_str
+            row[2] = where
+            row[5] = current_supplier
+            row[6] = fish_name_sheet
+            row[7] = price
+            row[9] = kg
+            
+            ws.update(f"A{next_row}:M{next_row}", [row])
+            added_count += 1
         
-        return f"✅ Zedle {len(added_rows)} samak 3al Sheet!\n📅 {date_info} {location}\n" + "\n".join(added_rows) + f"\n🔗 https://docs.google.com/spreadsheets/d/{FISH_SHEET_ID}"
+        if added_count == 0:
+            return f"🤔 Ma fhemet: {text}"
+        
+        return f"✅ Zedle {added_count} samak 3al sheet EXACTLY like you write!\n📅 {date_str} {where}\n🏭 {current_supplier}\n🔗 https://docs.google.com/spreadsheets/d/{FISH_SHEET_ID}"
     
     except Exception as e:
         import traceback; traceback.print_exc()
-        return f"❌ Sheet error: {str(e)[:500]}\nYour text: {text[:100]}"
+        return f"❌ Sheet error: {str(e)[:500]}"
+
+async def ai_reply(text, department="general"):
+    env = get_env()
+    prompts = {
+        "fish": f"You are Nohra Fish Business Manager. Expert in fish supply Nohra/Bernard, Ghassan broker. Sheet ID {FISH_SHEET_ID}. Understand Lebanese Arabizi fish: ghobbos, ajej, bra2, lo2os, frafir, sultan, etc. Understand format: 'Zedle samak 5nov broumana nohra: ghobbos 5 kilo se3er unit 5$'. Reply EXACTLY like user writes: if user writes Arabizi, reply Arabizi; if Arabic, reply Arabic. Don't translate fish names. Be short, friendly.",
+        "celeste": "You are Celeste Cosmetics Manager. Expert in makeup, skincare, beauty. Reply same language as user. Short, elegant.",
+        "english": "You are English Teaching Assistant. Help with English/Arabic/Lebanese translation, grammar. Encouraging.",
+        "secretary": "You are Personal Secretary. Help with calendar, meetings, reminders. Professional, organized.",
+        "general": "You are Nohra AI Assistant - 4 depts: Fish (ghobbos, ajej, bra2, lo2os), Celeste Cosmetics, English Teaching, Secretary. Detect dept. Reply same language user uses: English, Arabic, Lebanese, Arabizi. Write EXACTLY like user writes. Short friendly."
+    }
+    system_prompt = prompts.get(department, prompts["general"])
+    reply = None
+    if env["OPENAI_KEY"]:
+        try:
+            async with httpx.AsyncClient(timeout=25) as c:
+                r = await c.post("https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"},
+                    json={"model": "gpt-4o-mini","messages": [{"role": "system","content": system_prompt},{"role": "user","content": text}]})
+                data = r.json()
+                if "choices" in data:
+                    reply = data["choices"][0]["message"]["content"]
+        except Exception as e:
+            print(f"OpenAI error: {e}")
+    if not reply and env["GEMINI_KEY"]:
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={env['GEMINI_KEY']}",json={"contents": [{"parts": [{"text": f"{system_prompt}\nUser: {text}"}]}]})
+                data = r.json()
+                if "candidates" in data:
+                    reply = data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            print(f"Gemini error: {e}")
+    return reply
+
+app = FastAPI()
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    env = get_env()
+    return f"<html><body style='font-family:sans-serif;padding:20
