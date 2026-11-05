@@ -172,11 +172,6 @@ def parse_msg(text):
     if "adma" in lower_all: cur_where="Adma"
     if "broumana" in lower_all: cur_where="Broumana"
     if "baabda" in lower_all: cur_where="Baabda"
-    
-    # Handle "La, 6 bass: ..." correction
-    if "bass" in lower_all or "la," in lower_all:
-        # Reset and parse only correction part
-        pass
 
     for line_orig in lines:
         orig = line_orig.strip()
@@ -242,9 +237,13 @@ async def write_pending(phone):
         try: last_f=ws.get(f"A{last}:M{last}", value_render_option="FORMULA")[0]
         except: last_f=[""]*13
         while len(last_f)<13: last_f.append("")
+        print(f"LAST FORMULAS: {last_f}")
         def sc(f,nr):
-            if not f or "=" not in str(f): return ""
-            return str(f).replace(str(last), str(nr))
+            if not f or "=" not in str(f): return f if "=" in str(f) else ""
+            txt = str(f)
+            txt = txt.replace(str(last), str(nr))
+            return txt
+        
         last_g_formula=""; last_g_row=0; last_p_formula=""; last_p_row=0
         for i in range(len(forms)-1,-1,-1):
             if len(forms[i])>3 and forms[i][3].strip() and "SUM" in forms[i][3].upper():
@@ -252,10 +251,11 @@ async def write_pending(phone):
             if len(forms[i])>4 and forms[i][4].strip() and "SUM" in forms[i][4].upper():
                 if not last_p_formula: last_p_formula=forms[i][4]; last_p_row=i+1
             if last_g_formula and last_p_formula: break
+        
         existing_keys=set()
         for r in vals:
             if len(r)>2 and r[1].strip() and r[2].strip(): existing_keys.add((r[1].strip(), r[2].strip().lower()))
-        added=0; prev_date=""; seen=set()
+        added=0; updated=0; prev_date=""; seen=set()
         for it in plist:
             if prev_date and it["date"]!=prev_date: ws.append_row([""]*13, value_input_option="USER_ENTERED")
             prev_date=it["date"]
@@ -264,7 +264,14 @@ async def write_pending(phone):
             fidx=-1; cur_vals=ws.get_all_values()
             for i,row in enumerate(cur_vals):
                 if len(row)>6 and row[1].strip()==it["date"] and row[2].strip().lower()==it["where"].lower() and row[5].strip().lower()==it["supplier"].lower() and row[6].strip().upper()==it["fish"].upper(): fidx=i+1; break
-            if fidx!=-1: ws.update(f"J{fidx}", [[it["kg"]]], value_input_option="USER_ENTERED")
+            if fidx!=-1:
+                ws.update(f"J{fidx}", [[it["kg"]]], value_input_option="USER_ENTERED")
+                cur_form = ws.get(f"K{fidx}:M{fidx}", value_render_option="FORMULA")
+                if cur_form and len(cur_form[0])>=3:
+                    if not cur_form[0][0] or "=" not in str(cur_form[0][0]): ws.update(f"K{fidx}", [[sc(last_f[10], fidx)]], value_input_option="USER_ENTERED")
+                    if not cur_form[0][1] or "=" not in str(cur_form[0][1]): ws.update(f"L{fidx}", [[sc(last_f[11], fidx)]], value_input_option="USER_ENTERED")
+                    if not cur_form[0][2] or "=" not in str(cur_form[0][2]): ws.update(f"M{fidx}", [[sc(last_f[12], fidx)]], value_input_option="USER_ENTERED")
+                updated+=1
             else:
                 nr=len(ws.get_all_values())+1; row=[""]*13; row[0]=it["week"]; row[1]=it["date"]; row[2]=it["where"]
                 if is_first and key not in existing_keys:
@@ -275,12 +282,18 @@ async def write_pending(phone):
                 else: row[3]=""; row[4]=""
                 seen.add(key); existing_keys.add(key)
                 row[5]=it["supplier"]; row[6]=it["fish"]
-                row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""
+                row[7]=sc(last_f[7], nr) if "=" in str(last_f[7]) else ""
                 row[9]=it["kg"]
+                row[10]=sc(last_f[10], nr)  # K Fish Retail
+                row[11]=sc(last_f[11], nr)  # L Fish Invoice
+                row[12]=sc(last_f[12], nr)  # M Total PROFIT
+                print(f"WRITING ROW {nr}: {row}")
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1
         del PENDING[phone]
-        return f"Zabtet {added}! {plist[0]['date']} - Asfar Nohra rest Bernard - No price"
+        if added==0 and updated>0:
+            return f"Updated {updated}! Ghayart wazen + Retail/Profit formulas fixed! {plist[0]['date']}"
+        return f"Zabtet {added} new, {updated} updated! Retail+Profit formulas copied! {plist[0]['date']}"
     except Exception as e: traceback.print_exc(); return f"Error: {e}"
 
 async def handle(text, phone):
@@ -330,7 +343,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - 6 not 8 - Caption Boss</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - Retail+Profit formulas fixed + 6 not 8</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
