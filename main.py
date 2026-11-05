@@ -5,6 +5,7 @@ from fastapi.responses import PlainTextResponse, HTMLResponse
 from dotenv import load_dotenv
 import httpx
 load_dotenv()
+
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "nohra_verify_2024")
 FISH_SHEET_ID = "1_U7Mz0eKj8x3nWDvCSkRXkDgyYIEhYupJNJ0-DSskss"
 PENDING = {}
@@ -27,7 +28,7 @@ def extract_fish_name(raw):
     raw = re.sub(r"\$?\d+(\.\d+)?", "", raw)
     raw = " ".join(raw.split()).strip()
     parts = raw.split()
-    if len(parts) > 2: raw = " ".join(parts[:2])
+    if len(parts) > 3: raw = " ".join(parts[:3])
     return raw[:30]
 
 def get_week_from_date(date_str):
@@ -48,12 +49,12 @@ def detect_intent(text):
     if t in ["yes","y","ok","eh","na3am","أه","نعم","ايه"]: return "yes_confirm"
     if t in ["no","n","la","la2","لا"]: return "no_confirm"
     if "ghassan" in t and "formula" in t: return "ghassan_q"
-    if "zedle" in t or "زيدلي" in t or "زيد لي" in t or "add" in t: return "add"
+    if "zedle" in t or "زيدلي" in t or "زيد لي" in t: return "add"
     remove_words = ["l8i","shelle","shil","remove","l8e","l8ile","الغي","ألغي","الغ","شيل","امسح","مسح","احذف"]
     if any(w in t for w in remove_words): return "delete"
     update_words = ["ghayerle","ghayer","update","غير","غيرلي","عدل"]
     if any(w in t for w in update_words): return "update"
-    if re.search(r"\d+(?:\.\d+)?\s*k", t): return "add"
+    if re.search(r"\d+(?:\.\d+)?\s*(?:kilo|kg|k)\b", t): return "add"
     return "general"
 
 async def download_media(media_id):
@@ -93,63 +94,44 @@ async def read_image(media_id, cap=""):
         content = await download_media(media_id)
         if not content: return cap
         b64 = base64.b64encode(content).decode()
-        # SUPER DETAILED PROMPT FOR YOUR TABLES!
-        prompt = f"""
-You are reading Lebanese fish market receipts. There are 2 TABLES stacked vertically in this image. EACH TABLE = 1 DATE.
-
-IMPORTANT LAYOUT:
-- Each table has at bottom right: تاريخ = date like 24/10/24 or 25/10/25 -> means 24 Oct, 25 Oct
-- Each table has 2 sides: left side = نوهرا (Nohra) column, right side = برنار (Bernard) column
-- Fish under Nohra column = supplier Nohra, fish under Bernard column = Bernard
-- Sometimes table uses only one side if full.
-
-CAPTION OVERRIDE RULE - VERY IMPORTANT:
-User caption: "{cap}"
-If caption says "Antelias 24/10 kelon la Bernard" or "kelon la Bernard" -> ALL fish for date 24 Oct = Bernard, even if written under Nohra column!
-If says "kelon la Nohra" -> all Nohra.
-
-YOUR TASK:
-1. For each table, read its تاريخ date
-2. For each fish row, read نوع (fish type) and وزن (weight in kg)
-3. Assign supplier correctly based on column, BUT override if caption says kelon la X for that date
-
-Output EXACTLY like this (example for this image):
-24 Oct Antelias
-Bernard: MALIFA 8kg
-Bernard: 3ROUSA 10kg
-Bernard: SARGI 5kg
-etc
-25 Oct Antelias
-Bernard: AHMAR 5kg
-etc
+        prompt = f"""Read this SINGLE fish table. Fast data entry.
 
 Rules:
-- Arabic date ٢٤/١٠ = 24 Oct, ٢٥/١٠ = 25 Oct (NOT 30 Oct!)
-- Do not invent dates like 30 Oct
-- List every fish you see, weight is number before or after fish name
-- Use uppercase for fish: MALIFA, 3ROUSA, etc
-- No refusal!
+- Date at bottom right تاريخ like 24/10 = 24 Oct, 25/10 = 25 Oct. Arabic ٢٤=24, ٢٥=25, ٢٤/١٠/c = 24 Oct.
+- Columns: نوع=fish name, وزن=weight in grams (8000=8kg, 4700=4.7kg), سعر=price IGNORE IT!
+- Supplier: left side نوهرا=Nohra, right side برنار=Bernard
+- Caption override: "{cap}" -> If "kelon la Bernard" ALL fish for that date = Bernard.
+
+Handwriting map:
+لؤز صخري=LO2OS SAKHRE, غساني=GHASSANI, كالاماري=KALAMARI, جرو=JRAWE, فريدي=FARIDE, بزري=BEZRI, أصفر=ASFAR, مليفة=MALIFA, جربيدي=JARBIDE, برا2=BRA2, مرجان=MARJAN, لقز=LO2OS, سلطان=SULTAN, رملي=RAMLE, عرموت=AARMOUT
+
+Output EXACT:
+24 Oct Antelias
+Bernard: LO2OS SAKHRE 4kg
+Bernard: GHASSANI 3kg
+etc
+
+Weight = وزن/1000. No سعر! Return only list.
 """
-        async with httpx.AsyncClient(timeout=90) as c:
+        async with httpx.AsyncClient(timeout=45) as c:
             r = await c.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"},
                 json={
                     "model":"gpt-4o",
                     "messages":[
-                        {"role":"system","content":"You are a precise data entry clerk for fish receipts. Read handwritten Arabic dates and fish names. Never refuse. Each table is one date."},
+                        {"role":"system","content":"You are fast data entry. Extract وزن only, not سعر. 8000=8kg. Date ٢٤/١٠=24 Oct. Map Arabic fish to English codes."},
                         {"role":"user","content":[
                             {"type":"text","text":prompt},
                             {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}", "detail":"high"}}
                         ]}
-                    ]
+                    ],
+                    "temperature":0
                 })
             j = r.json()
-            print(f"IMAGE READ: {j}")
-            if "choices" not in j:
-                print(f"OPENAI ERROR: {j}")
-                return cap
-            text = j["choices"][0]["message"]["content"]
-            return text
+            print(f"IMAGE FAST: {j}")
+            if "choices" not in j: return cap
+            txt = j["choices"][0]["message"]["content"]
+            return txt
     except Exception as e:
         print(f"read_image error {e}"); traceback.print_exc(); return cap
 
@@ -171,27 +153,21 @@ async def get_ws():
 def parse_msg(text):
     lines = text.strip().split("\n")
     parsed=[]; cur_supplier="Nohra"; cur_date="24 Oct"; cur_where="Antelias"; cur_week=get_week_from_date(cur_date)
-    # Check for kelon override
     overrides = {}
-    if "kelon" in text.lower():
-        # Find dates mentioned in kelon context
-        for m in re.finditer(r"(\d{1,2})[\/\s]*10.*?bernard", text.lower()):
-            day = m.group(1)
-            overrides[f"{day.zfill(2)} Oct"] = "Bernard"
-        if "24" in text and "bernard" in text.lower():
-            overrides["24 Oct"] = "Bernard"
+    if "kelon" in text.lower() and "bernard" in text.lower():
+        if "24" in text: overrides["24 Oct"] = "Bernard"
+        if "25" in text: overrides["25 Oct"] = "Bernard"
     
-    for line in lines:
-        orig=line.strip()
+    for line_orig in lines:
+        orig = line_orig.strip()
         if not orig: continue
-        low=orig.lower()
-        # Date detection - handle both formats
-        dm=re.search(r"(\d{1,2})\s*(oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", low)
-        dm2=re.search(r"(\d{1,2})[\/\.\s]+(\d{1,2})[\/\.\s]+\d{2,4}", low)
-        dm3=re.search(r"(\d{1,2})\s+oct\s+antelias", low)
-        if dm or dm2 or dm3:
-            if dm: day=dm.group(1).zfill(2); mon=dm.group(2).capitalize()[:3]; cur_date=f"{day} {mon}"; cur_week=get_week_from_date(cur_date)
-            elif dm3: day=dm3.group(1).zfill(2); cur_date=f"{day} Oct"; cur_week=get_week_from_date(cur_date)
+        low = orig.lower()
+        
+        dm = re.search(r"(\d{1,2})\s*(oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", low)
+        dm2 = re.search(r"(\d{1,2})[\/\:\-\.\s]+(\d{1,2})", low)
+        if dm or dm2:
+            if dm:
+                day=dm.group(1).zfill(2); mon=dm.group(2).capitalize()[:3]; cur_date=f"{day} {mon}"; cur_week=get_week_from_date(cur_date)
             elif dm2:
                 day=dm2.group(1).zfill(2); m=int(dm2.group(2)); months=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
                 if 1<=m<=12: cur_date=f"{day} {months[m]}"; cur_week=get_week_from_date(cur_date)
@@ -199,49 +175,41 @@ def parse_msg(text):
             if "antelias" in low: cur_where="Antelias"
             if "adma" in low: cur_where="Adma"
             if "baabda" in low: cur_where="Baabda"
-            if "kilo" not in low and "kg" not in low and "antelias" not in low: 
-                continue
-        if "antelias" in low or "adma" in low or "broumana" in low or "baabda" in low:
-            if "broumana" in low: cur_where="Broumana"
-            if "antelias" in low: cur_where="Antelias"
-            if "adma" in low: cur_where="Adma"
-            if "baabda" in low: cur_where="Baabda"
-            # If line is just location+date without kg, skip but keep context
-            if "kilo" not in low and "kg" not in low and ":" not in orig:
-                if re.search(r"^\d{1,2}\s+oct", low): continue
+            if "bernard" in low: cur_supplier="Bernard"
+            if "nohra" in low and "bernard" not in low: cur_supplier="Nohra"
+            # If line is date/location only, keep context but don't try to parse fish
+            if re.search(r"^\d{1,2}[\/\:\-\s]+\d{1,2}.*(oct|antelias|adma|bernard)", low):
+                if "kilo" not in low and "kg" not in low:
+                    continue
         
-        if ":" in orig:
-            parts=orig.split(":",1); head=parts[0].lower()
-            if "bernard" in head: cur_supplier="Bernard"
-            if "nohra" in head: cur_supplier="Nohra"
-            if len(parts)>1:
-                orig=parts[1].strip()
-                if not orig: continue
+        if "antelias" in low: cur_where="Antelias"
+        if "adma" in low: cur_where="Adma"
+        if "broumana" in low: cur_where="Broumana"
+        if "baabda" in low: cur_where="Baabda"
         
-        # Apply override for this date
         if cur_date in overrides:
             cur_supplier = overrides[cur_date]
+        if "bernard" in low and "antelias" in low and "kilo" not in low and "kg" not in low:
+            cur_supplier="Bernard"
+            continue
         
-        km=re.search(r"(\d+(?:\.\d+)?)\s*k", low)
-        if not km: continue
-        kg=km.group(1); idx=low.find(km.group(0).lower()); fish_raw=orig[:idx]
-        if ":" in fish_raw: fish_raw=fish_raw.split(":")[-1]
-        fish_clean=extract_fish_name(fish_raw)
-        if not fish_clean or fish_clean.lower() in STOP_WORDS: continue
-        price_d=""; price_l=""; ptype="none"
-        pd=re.search(r"(\d+(?:\.\d+)?)\s*\$", orig)
-        if pd: price_d="$"+pd.group(1); ptype="dollar"
-        pl=re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l|ll|alf)", low)
-        if pl and not price_d:
-            val=pl.group(1)
-            if "alf" in low and float(val)<1000: val=str(int(float(val)*1000))
-            price_l=val; ptype="lbp"
-        parsed.append({"fish":fish_clean,"kg":kg,"price_d":price_d,"price_l":price_l,"ptype":ptype,"supplier":cur_supplier,"where":cur_where,"date":cur_date,"week":cur_week})
+        # Find ALL fish in same line
+        matches = list(re.finditer(r"(\d+(?:\.\d+)?)\s*(?:kilo|kilos|kg|k)\b", low))
+        if not matches: continue
+        
+        last_idx = 0
+        for m in matches:
+            kg = m.group(1)
+            start = m.start()
+            fish_raw = orig[last_idx:start].strip()
+            fish_raw = re.sub(r"^\d+(?:\.\d+)?\s*(?:kilo|kg|k)\s*", "", fish_raw, flags=re.I).strip()
+            fish_raw = re.sub(r"^(and|w|\+|,)\s*", "", fish_raw, flags=re.I).strip()
+            if ":" in fish_raw and len(fish_raw.split(":")[0])<10: fish_raw = fish_raw.split(":")[-1]
+            fish_clean = extract_fish_name(fish_raw)
+            if fish_clean and fish_clean.lower() not in STOP_WORDS and len(fish_clean)>=2:
+                parsed.append({"fish":fish_clean,"kg":kg,"price_d":"","price_l":"","ptype":"none","supplier":cur_supplier,"where":cur_where,"date":cur_date,"week":cur_week})
+            last_idx = m.end()
     return parsed
-
-def correct_pending(text, phone):
-    if phone not in PENDING: return None
-    return None
 
 async def write_pending(phone):
     if phone not in PENDING: return "Ma fi pending"
@@ -299,7 +267,7 @@ async def write_pending(phone):
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1
         del PENDING[phone]
-        return f"Zabtet {added}! {plist[0]['date']} la {plist[-1]['date']}"
+        return f"Zabtet {added}! {plist[0]['date']} la {plist[-1]['date']} - No price, only wazen"
     except Exception as e: traceback.print_exc(); return f"Error: {e}"
 
 async def handle(text, phone):
@@ -322,7 +290,7 @@ async def handle(text, phone):
             target=target.strip(); target=re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", "", target).strip()
             for w in ["adma","broumana","antelias","baabda"]: target=target.replace(w, "")
             target=target.strip(); parts=[p for p in target.split() if len(p)>=3]
-            if not parts: return "Eb3at: L8i sultan"
+            if not parts: return "Eb3at: L8i sultan - voice kamen!"
             search_term=parts[0].upper()
             for i in range(len(vals)-1,0,-1):
                 r=vals[i]
@@ -333,8 +301,7 @@ async def handle(text, phone):
             if not parsed: return "Eh ma fehmet, eb3at: zedle sultan 5 kilo - voice kamen!"
             PENDING[phone]=parsed; lines=[]
             for p in parsed:
-                pr=p["price_d"] or (p["price_l"]+" LBP" if p["price_l"] else "")
-                lines.append(f"{p['fish']} {p['kg']}kg {p['supplier']} {p['date']} {p['where']} {pr}".strip())
+                lines.append(f"{p['fish']} {p['kg']}kg {p['supplier']} {p['date']} {p['where']}".strip())
             summ="\n".join(lines); dates=list(set([p["date"] for p in parsed]))
             action=f"Rah zid hek - {len(parsed)} samke, Dates: {', '.join(dates)}:"
             return f"{action}\n{summ}\n\nConfirm? YES / NO"
@@ -350,7 +317,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - 2 tables = 2 dates + kelon override</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - FAST IMAGE + MULTI-FISH + NO PRICE + VOICE</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
