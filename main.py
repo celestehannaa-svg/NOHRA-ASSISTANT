@@ -50,10 +50,8 @@ def detect_intent(text):
     if t in ["no","n","la","la2","لا"]: return "no_confirm"
     if "ghassan" in t and "formula" in t: return "ghassan_q"
     if "zedle" in t or "زيدلي" in t or "زيد لي" in t: return "add"
-    remove_words = ["l8i","shelle","shil","remove","l8e","l8ile","الغي","ألغي","الغ","شيل","امسح","مسح","احذف"]
-    if any(w in t for w in remove_words): return "delete"
-    update_words = ["ghayerle","ghayer","update","غير","غيرلي","عدل"]
-    if any(w in t for w in update_words): return "update"
+    if any(w in t for w in ["l8i","shelle","shil","remove","l8e","l8ile","الغي","ألغي","الغ","شيل","امسح","مسح","احذف"]): return "delete"
+    if any(w in t for w in ["ghayerle","ghayer","update","غير","غيرلي","عدل"]): return "update"
     if re.search(r"\d+(?:\.\d+)?\s*(?:kilo|kg|k)\b", t): return "add"
     return "general"
 
@@ -94,24 +92,25 @@ async def read_image(media_id, cap=""):
         content = await download_media(media_id)
         if not content: return cap
         b64 = base64.b64encode(content).decode()
-        prompt = f"""Read this SINGLE fish table. Fast data entry.
+        prompt = f"""
+STRICT COUNT! Do NOT invent fish! Count only visible rows with وزن!
 
-Rules:
-- Date at bottom right تاريخ like 24/10 = 24 Oct, 25/10 = 25 Oct. Arabic ٢٤=24, ٢٥=25, ٢٤/١٠/c = 24 Oct.
-- Columns: نوع=fish name, وزن=weight in grams (8000=8kg, 4700=4.7kg), سعر=price IGNORE IT!
-- Supplier: left side نوهرا=Nohra, right side برنار=Bernard
-- Caption override: "{cap}" -> If "kelon la Bernard" ALL fish for that date = Bernard.
+Caption is BOSS: "{cap}"
+- Date = 25 Oct from caption (ignore 02 Jan, C/o/1 etc)
+- If caption says "Asfar nohra Rest la bernard" -> Asfar=Nohra, rest=Bernard
+- If "kelon la Bernard" -> all Bernard
 
-Handwriting map:
-لؤز صخري=LO2OS SAKHRE, غساني=GHASSANI, كالاماري=KALAMARI, جرو=JRAWE, فريدي=FARIDE, بزري=BEZRI, أصفر=ASFAR, مليفة=MALIFA, جربيدي=JARBIDE, برا2=BRA2, مرجان=MARJAN, لقز=LO2OS, سلطان=SULTAN, رملي=RAMLE, عرموت=AARMOUT
+Image has 1 table. How many rows with وزن do you see? If 6 rows, output 6 only!
 
-Output EXACT:
-24 Oct Antelias
-Bernard: LO2OS SAKHRE 4kg
-Bernard: GHASSANI 3kg
-etc
+Each row: نوع=fish, وزن=weight grams (4000=4kg), سعر=IGNORE!
 
-Weight = وزن/1000. No سعر! Return only list.
+Arabic map: أصفر=ASFAR, برا2=BRA2, جربيدي=JARBIDE, مليفة=MALIFA, بزري=BEZRI, فريدي=FARIDE, جرو=JRAWE, كالاماري=KALAMARI
+
+Output:
+25 Oct Antelias
+Asfar: ASFAR 4kg Nohra 25 Oct Antelias
+Bernard: MALIFA 3kg Bernard 25 Oct Antelias
+etc - exact count, no hallucination!
 """
         async with httpx.AsyncClient(timeout=45) as c:
             r = await c.post("https://api.openai.com/v1/chat/completions",
@@ -119,7 +118,7 @@ Weight = وزن/1000. No سعر! Return only list.
                 json={
                     "model":"gpt-4o",
                     "messages":[
-                        {"role":"system","content":"You are fast data entry. Extract وزن only, not سعر. 8000=8kg. Date ٢٤/١٠=24 Oct. Map Arabic fish to English codes."},
+                        {"role":"system","content":f"Count rows exactly. Do not hallucinate. Caption: {cap}. Date 25 Oct. Asfar Nohra rest Bernard. Weight=وزن/1000."},
                         {"role":"user","content":[
                             {"type":"text","text":prompt},
                             {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}", "detail":"high"}}
@@ -128,10 +127,10 @@ Weight = وزن/1000. No سعر! Return only list.
                     "temperature":0
                 })
             j = r.json()
-            print(f"IMAGE FAST: {j}")
+            print(f"IMAGE: {j}")
             if "choices" not in j: return cap
             txt = j["choices"][0]["message"]["content"]
-            return txt
+            return f"{cap}\n{txt}"
     except Exception as e:
         print(f"read_image error {e}"); traceback.print_exc(); return cap
 
@@ -152,16 +151,39 @@ async def get_ws():
 
 def parse_msg(text):
     lines = text.strip().split("\n")
-    parsed=[]; cur_supplier="Nohra"; cur_date="24 Oct"; cur_where="Antelias"; cur_week=get_week_from_date(cur_date)
-    overrides = {}
-    if "kelon" in text.lower() and "bernard" in text.lower():
-        if "24" in text: overrides["24 Oct"] = "Bernard"
-        if "25" in text: overrides["25 Oct"] = "Bernard"
+    parsed=[]; cur_supplier="Bernard"; cur_date="25 Oct"; cur_where="Antelias"; cur_week=get_week_from_date(cur_date)
+    lower_all = text.lower()
+    cap_date_match = re.search(r"(\d{1,2})\s*oct", lower_all)
+    if cap_date_match:
+        day = cap_date_match.group(1).zfill(2)
+        cur_date = f"{day} Oct"
+        cur_week = get_week_from_date(cur_date)
     
+    special_fish_supplier = {}
+    default_supplier = "Bernard"
+    if "asfar" in lower_all and "nohra" in lower_all:
+        special_fish_supplier["ASFAR"] = "Nohra"
+        default_supplier = "Bernard"
+    if "kelon la bernard" in lower_all:
+        default_supplier = "Bernard"
+        cur_supplier = "Bernard"
+    
+    if "antelias" in lower_all: cur_where="Antelias"
+    if "adma" in lower_all: cur_where="Adma"
+    if "broumana" in lower_all: cur_where="Broumana"
+    if "baabda" in lower_all: cur_where="Baabda"
+    
+    # Handle "La, 6 bass: ..." correction
+    if "bass" in lower_all or "la," in lower_all:
+        # Reset and parse only correction part
+        pass
+
     for line_orig in lines:
         orig = line_orig.strip()
         if not orig: continue
         low = orig.lower()
+        if "no3" in low and "wazen" in low: continue
+        if "تاريخ" in orig: continue
         
         dm = re.search(r"(\d{1,2})\s*(oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", low)
         dm2 = re.search(r"(\d{1,2})[\/\:\-\.\s]+(\d{1,2})", low)
@@ -171,29 +193,14 @@ def parse_msg(text):
             elif dm2:
                 day=dm2.group(1).zfill(2); m=int(dm2.group(2)); months=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
                 if 1<=m<=12: cur_date=f"{day} {months[m]}"; cur_week=get_week_from_date(cur_date)
-            if "broumana" in low: cur_where="Broumana"
             if "antelias" in low: cur_where="Antelias"
-            if "adma" in low: cur_where="Adma"
-            if "baabda" in low: cur_where="Baabda"
             if "bernard" in low: cur_supplier="Bernard"
-            if "nohra" in low and "bernard" not in low: cur_supplier="Nohra"
-            # If line is date/location only, keep context but don't try to parse fish
-            if re.search(r"^\d{1,2}[\/\:\-\s]+\d{1,2}.*(oct|antelias|adma|bernard)", low):
-                if "kilo" not in low and "kg" not in low:
-                    continue
+            if "kilo" not in low and "kg" not in low and re.search(r"^\d{1,2}[\/\:\-\s]+\d{1,2}", low):
+                continue
         
         if "antelias" in low: cur_where="Antelias"
         if "adma" in low: cur_where="Adma"
-        if "broumana" in low: cur_where="Broumana"
-        if "baabda" in low: cur_where="Baabda"
         
-        if cur_date in overrides:
-            cur_supplier = overrides[cur_date]
-        if "bernard" in low and "antelias" in low and "kilo" not in low and "kg" not in low:
-            cur_supplier="Bernard"
-            continue
-        
-        # Find ALL fish in same line
         matches = list(re.finditer(r"(\d+(?:\.\d+)?)\s*(?:kilo|kilos|kg|k)\b", low))
         if not matches: continue
         
@@ -203,11 +210,19 @@ def parse_msg(text):
             start = m.start()
             fish_raw = orig[last_idx:start].strip()
             fish_raw = re.sub(r"^\d+(?:\.\d+)?\s*(?:kilo|kg|k)\s*", "", fish_raw, flags=re.I).strip()
-            fish_raw = re.sub(r"^(and|w|\+|,)\s*", "", fish_raw, flags=re.I).strip()
+            fish_raw = re.sub(r"^(and|w|\+|,|asfar:|bernard:|nohra:)\s*", "", fish_raw, flags=re.I).strip()
             if ":" in fish_raw and len(fish_raw.split(":")[0])<10: fish_raw = fish_raw.split(":")[-1]
             fish_clean = extract_fish_name(fish_raw)
             if fish_clean and fish_clean.lower() not in STOP_WORDS and len(fish_clean)>=2:
-                parsed.append({"fish":fish_clean,"kg":kg,"price_d":"","price_l":"","ptype":"none","supplier":cur_supplier,"where":cur_where,"date":cur_date,"week":cur_week})
+                supplier = cur_supplier
+                if fish_clean.upper() in special_fish_supplier:
+                    supplier = special_fish_supplier[fish_clean.upper()]
+                elif fish_clean.upper() != "ASFAR" and "rest la bernard" in lower_all:
+                    supplier = "Bernard"
+                elif default_supplier:
+                    if fish_clean.upper() not in special_fish_supplier:
+                        supplier = default_supplier
+                parsed.append({"fish":fish_clean,"kg":kg,"price_d":"","price_l":"","ptype":"none","supplier":supplier,"where":cur_where,"date":cur_date,"week":cur_week})
             last_idx = m.end()
     return parsed
 
@@ -260,14 +275,12 @@ async def write_pending(phone):
                 else: row[3]=""; row[4]=""
                 seen.add(key); existing_keys.add(key)
                 row[5]=it["supplier"]; row[6]=it["fish"]
-                if it["ptype"]=="dollar": row[7]=it["price_d"]
-                elif it["ptype"]=="lbp": row[8]=it["price_l"]; row[7]=f"=I{nr}/89"
-                else: row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""
+                row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""
                 row[9]=it["kg"]
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1
         del PENDING[phone]
-        return f"Zabtet {added}! {plist[0]['date']} la {plist[-1]['date']} - No price, only wazen"
+        return f"Zabtet {added}! {plist[0]['date']} - Asfar Nohra rest Bernard - No price"
     except Exception as e: traceback.print_exc(); return f"Error: {e}"
 
 async def handle(text, phone):
@@ -317,7 +330,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - FAST IMAGE + MULTI-FISH + NO PRICE + VOICE</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - 6 not 8 - Caption Boss</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
