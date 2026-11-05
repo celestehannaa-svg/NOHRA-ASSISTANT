@@ -26,12 +26,11 @@ FISH_LIST = ["ghobbos","ajej","bra2","lo2os","frafir","sultan","filet","bezri","
 def extract_fish_name(raw):
     raw_low = raw.lower()
     for f in FISH_LIST:
-        if f in raw_low:
-            return f.upper()
+        if f in raw_low: return f.upper()
     name = raw.upper()
     name = re.sub(r"\d+\s*(?:OCT|NOV)", "", name)
     name = re.sub(r"ZEDLE", "", name)
-    for bad in ["NOHRA","BERNARD","GHASSAN","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","SE3R"]:
+    for bad in ["NOHRA","BERNARD","GHASSAN","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","SE3R","LBP","L.L"]:
         name = name.replace(bad,"")
     name = re.sub(r"\$?\d+(\.\d+)?", "", name)
     name = " ".join(name.split()).strip()
@@ -42,27 +41,19 @@ def extract_fish_name(raw):
     return name
 
 def get_week_from_date(date_str):
-    """date_str like '22 Oct' -> Week Tue-Sun e.g., '21 - 26 Oct'"""
     try:
-        # Parse day + month, assume year 2025 (from your sheet)
         dt = datetime.strptime(date_str + " 2025", "%d %b %Y")
-        # Find Tuesday of that week (weekday: Mon=0, Tue=1, ... Sun=6)
-        # Tuesday start, Sunday end (5 days after Tuesday)
         weekday = dt.weekday()
-        if weekday == 0:  # Monday off - belongs to previous Tue-Sun? Take previous Tue
-            tuesday = dt - timedelta(days=6)
+        if weekday == 0: tuesday = dt - timedelta(days=6)
         else:
-            # Days since Tuesday
             days_since_tue = (weekday - 1) % 7
             tuesday = dt - timedelta(days=days_since_tue)
         sunday = tuesday + timedelta(days=5)
-        # Format: "21 - 26 Oct" or if cross month "28 Oct - 02 Nov"
         if tuesday.month == sunday.month:
             return f"{tuesday.day} - {sunday.day} {tuesday.strftime('%b')}"
         else:
             return f"{tuesday.day} {tuesday.strftime('%b')} - {sunday.day} {sunday.strftime('%b')}"
-    except:
-        return "20 - 25 Oct"
+    except: return "20 - 25 Oct"
 
 def detect_intent(text):
     if len(text) > 1500: return "ignore"
@@ -113,7 +104,7 @@ async def read_image_text(media_id, caption=""):
             r = await c.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"},
                 json={"model": "gpt-4o-mini","messages": [{"role": "user","content": [
-                    {"type": "text","text": "Extract fish list. Return like: Zedle 22 oct adma Nohra: sultan 5kilo 3$ Ajej 30 kilo 7$ Bernard: bra2 20kilo Filet 10 kilo. Caption: "+caption},
+                    {"type": "text","text": "Extract fish list. Return like: Zedle 22 oct adma Nohra: sultan 5kilo 3$ Ajej 30 kilo 700000 lbp Bernard: bra2 20kilo Filet 10 kilo. Caption: "+caption},
                     {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]})
             return r.json()["choices"][0]["message"]["content"]
     except: return caption
@@ -172,11 +163,48 @@ def parse_fish_message(text):
         if ":" in fish_raw: fish_raw = fish_raw.split(":")[-1]
         fish_clean = extract_fish_name(fish_raw)
         if not fish_clean: continue
-        price=""
-        pm = re.search(r"(\d+(?:\.\d+)?)\$", orig)
-        if pm: price = "$"+pm.group(1)
+        
+        # Price detection: $ vs LBP
+        price_dollar = ""
+        price_lbp = ""
+        price_type = "none"
+        # Check for $ price: se3er 3$ or $3 or 3$
+        pm_dollar = re.search(r"(\d+(?:\.\d+)?)\s*\$", orig)
+        pm_dollar2 = re.search(r"\$\s*(\d+(?:\.\d+)?)", orig)
+        # Check for LBP price: 700 LBP, 700000 lbp, LBP 700
+        pm_lbp = re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l|LL)", low)
+        pm_lbp2 = re.search(r"(?:lbp|l\.l|LL)\s*(\d+(?:\.\d+)?)", low)
+        
+        if pm_dollar:
+            price_dollar = "$" + pm_dollar.group(1)
+            price_type = "dollar"
+        elif pm_dollar2:
+            price_dollar = "$" + pm_dollar2.group(1)
+            price_type = "dollar"
+        elif pm_lbp:
+            price_lbp = pm_lbp.group(1)
+            price_type = "lbp"
+        elif pm_lbp2:
+            price_lbp = pm_lbp2.group(1)
+            price_type = "lbp"
+        else:
+            # If number before $ is missing, check if any number after se3er without $ and small (<100) -> treat as $
+            # If big number >1000 without $ -> treat as LBP
+            pm_se3er = re.search(r"se3er\s+(\d+(?:\.\d+)?)", low)
+            if pm_se3er:
+                val = pm_se3er.group(1)
+                try:
+                    num = float(val)
+                    if num >= 1000:  # Likely LBP
+                        price_lbp = val
+                        price_type = "lbp"
+                    else:  # Likely $
+                        price_dollar = "$" + val
+                        price_type = "dollar"
+                except: pass
+
         week = get_week_from_date(date_str)
-        parsed.append({"fish": fish_clean, "kg": kg, "price": price, "supplier": current_supplier, "where": where, "date_str": date_str, "week": week})
+        parsed.append({"fish": fish_clean, "kg": kg, "price_dollar": price_dollar, "price_lbp": price_lbp, "price_type": price_type, "supplier": current_supplier, "where": where, "date_str": date_str, "week": week})
     return parsed
 
 async def write_pending_to_sheet(phone):
@@ -194,7 +222,6 @@ async def write_pending_to_sheet(phone):
         for i, row in enumerate(all_values):
             if len(row) > 2 and len(pending_list)>0:
                 if row[1].strip() == pending_list[0]["date_str"] and row[2].strip().lower() == pending_list[0]["where"].lower():
-                    # Found same date+branch
                     if len(row) > 3 and row[3].strip():
                         existing_ghassan = all_formulas[i][3] if len(all_formulas[i])>3 else row[3]
                     if len(row) > 4 and row[4].strip():
@@ -214,30 +241,71 @@ async def write_pending_to_sheet(phone):
             if not formula or "=" not in str(formula): return ""
             return str(formula).replace(str(last_data_row), str(new_row))
 
-        added=0; summary=[]
+        added=0; updated=0; summary=[]
         for item in pending_list:
-            new_row_num = last_data_row+added+1
-            row=[""]*13
-            row[0]=item["week"]
-            row[1]=item["date_str"]
-            row[2]=item["where"]
-            # Use existing GHASSAN/PROFIT for same date+branch if found
-            if existing_ghassan:
-                row[3]=existing_ghassan.replace(str(last_data_row), str(new_row_num)) if "=" in str(existing_ghassan) else existing_ghassan
+            # Check duplicate: same Fish + DATE + Where + supplier
+            found_idx = -1
+            for i, row in enumerate(all_values):
+                if len(row) > 6:
+                    if row[1].strip() == item["date_str"] and row[2].strip().lower() == item["where"].lower() and row[5].strip().lower() == item["supplier"].lower() and row[6].strip().upper() == item["fish"].upper():
+                        found_idx = i+1  # 1-indexed
+                        break
+            if found_idx != -1:
+                # UPDATE existing row - half info edit!
+                # Update Qtty if provided
+                ws.update(f"J{found_idx}", [[item["kg"]]], value_input_option="USER_ENTERED")
+                # Update price based on type
+                if item["price_type"] == "dollar" and item["price_dollar"]:
+                    ws.update(f"H{found_idx}", [[item["price_dollar"]]], value_input_option="USER_ENTERED")
+                    ws.update(f"I{found_idx}", [[""]], value_input_option="USER_ENTERED")  # Clear LBP
+                elif item["price_type"] == "lbp" and item["price_lbp"]:
+                    ws.update(f"I{found_idx}", [[item["price_lbp"]]], value_input_option="USER_ENTERED")
+                    # Keep Fish Price as formula - copy from last_formulas if needed
+                    if last_formulas[7] and "=" in str(last_formulas[7]):
+                        ws.update(f"H{found_idx}", [[smart_copy(last_formulas[7], found_idx)]], value_input_option="USER_ENTERED")
+                updated+=1
+                summary.append(f"Updated {item['fish']} {item['kg']}kg")
             else:
-                row[3]=smart_copy(last_formulas[3], new_row_num) if len(last_formulas)>3 else ""
-            if existing_profit:
-                row[4]=existing_profit.replace(str(last_data_row), str(new_row_num)) if "=" in str(existing_profit) else existing_profit
-            else:
-                row[4]=smart_copy(last_formulas[4], new_row_num) if len(last_formulas)>4 else ""
-            row[5]=item["supplier"]; row[6]=item["fish"]; row[7]=item["price"]; row[9]=item["kg"]
-            if len(last_formulas)>10: row[10]=smart_copy(last_formulas[10], new_row_num)
-            if len(last_formulas)>11: row[11]=smart_copy(last_formulas[11], new_row_num)
-            if len(last_formulas)>12: row[12]=smart_copy(last_formulas[12], new_row_num)
-            ws.update(f"A{new_row_num}:M{new_row_num}", [row], value_input_option="USER_ENTERED")
-            added+=1; summary.append(f"{item['fish']} {item['kg']}kg {item['supplier']}")
+                # ADD new row
+                new_row_num = last_data_row+added+1 + updated  # careful
+                # Recalculate last_data_row each time
+                new_row_num = len(ws.get_all_values()) + 1
+                row=[""]*13
+                row[0]=item["week"]; row[1]=item["date_str"]; row[2]=item["where"]
+                if existing_ghassan:
+                    row[3]=existing_ghassan.replace(str(last_data_row), str(new_row_num)) if "=" in str(existing_ghassan) else existing_ghassan
+                else:
+                    row[3]=smart_copy(last_formulas[3], new_row_num) if len(last_formulas)>3 else ""
+                if existing_profit:
+                    row[4]=existing_profit.replace(str(last_data_row), str(new_row_num)) if "=" in str(existing_profit) else existing_profit
+                else:
+                    row[4]=smart_copy(last_formulas[4], new_row_num) if len(last_formulas)>4 else ""
+                row[5]=item["supplier"]; row[6]=item["fish"]
+                # Price handling: $ vs LBP
+                if item["price_type"] == "dollar":
+                    row[7]=item["price_dollar"]  # Fish Price $
+                    row[8]=""  # LBP blank
+                elif item["price_type"] == "lbp":
+                    row[7]=smart_copy(last_formulas[7], new_row_num) if len(last_formulas)>7 and last_formulas[7] and "=" in str(last_formulas[7]) else ""  # Keep formula in $
+                    row[8]=item["price_lbp"]  # LBP value
+                else:
+                    row[7]=smart_copy(last_formulas[7], new_row_num) if len(last_formulas)>7 else ""
+                    row[8]=""
+                row[9]=item["kg"]
+                if len(last_formulas)>10: row[10]=smart_copy(last_formulas[10], new_row_num)
+                if len(last_formulas)>11: row[11]=smart_copy(last_formulas[11], new_row_num)
+                if len(last_formulas)>12: row[12]=smart_copy(last_formulas[12], new_row_num)
+                ws.update(f"A{new_row_num}:M{new_row_num}", [row], value_input_option="USER_ENTERED")
+                added+=1
+                summary.append(f"{item['fish']} {item['kg']}kg {item['supplier']}")
+
         del PENDING[phone]
-        return f"Zedle {added} samak! {' + '.join(summary)} - {pending_list[0]['where']} {pending_list[0]['date_str']} Week {pending_list[0]['week']}"
+        if updated>0 and added==0:
+            return f"Updated {updated} samak (no duplicate)! {' + '.join(summary)} - {pending_list[0]['where']} {pending_list[0]['date_str']}"
+        elif added>0 and updated>0:
+            return f"Added {added} + Updated {updated}! {' + '.join(summary)}"
+        else:
+            return f"Zedle {added} samak! {' + '.join(summary)} - {pending_list[0]['where']} {pending_list[0]['date_str']} Week {pending_list[0]['week']}"
     except Exception as e:
         traceback.print_exc(); return f"Error writing: {e}"
 
@@ -290,23 +358,35 @@ async def smart_sheet_action(text, phone):
             PENDING[phone] = parsed
             lines = []
             for p in parsed:
-                lines.append(f"{p['fish']} {p['kg']}kg {p['price']} {p['supplier']}")
+                if p["price_type"]=="dollar": price_show = p["price_dollar"]
+                elif p["price_type"]=="lbp": price_show = p["price_lbp"]+" LBP"
+                else: price_show = "no price yet"
+                lines.append(f"{p['fish']} {p['kg']}kg {price_show} {p['supplier']}")
             summary = "\n".join(lines)
-            return f"Rah zid hek:\n{summary}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date_str']} Week: {parsed[0]['week']}\n\nGHASSAN/PROFIT will be same for whole day {parsed[0]['where']} {parsed[0]['date_str']}\n\nConfirm? Eb3at YES aw NO"
+            # Check duplicates preview
+            dup_check = []
+            for p in parsed:
+                for row in all_values:
+                    if len(row)>6 and row[1].strip()==p["date_str"] and row[2].strip().lower()==p["where"].lower() and row[5].strip().lower()==p["supplier"].lower() and row[6].strip().upper()==p["fish"].upper():
+                        dup_check.append(p["fish"])
+                        break
+            dup_msg = f"\n⚠️ {', '.join(dup_check)} already exists - will UPDATE not duplicate!" if dup_check else ""
+            return f"Rah zid hek:\n{summary}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date_str']} Week: {parsed[0]['week']}{dup_msg}\n\nGHASSAN same for whole day {parsed[0]['where']} {parsed[0]['date_str']}\n\nConfirm? Eb3at YES aw NO"
+
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
     return None
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra SMART - Week Tue-Sun + One GHASSAN per day/branch + BRA2 exact + YES/NO</h2>")
+async def root(): return HTMLResponse("<h2>Nohra SMART - No duplicate + LBP/$ formula + Week Tue-Sun + BRA2 + YES/NO</h2>")
 @app.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
     mode = request.query_params.get("hub.mode"); token = request.query_params.get("hub.verify_token"); challenge = request.query_params.get("hub.challenge")
     if mode=="subscribe" and token==VERIFY_TOKEN: return PlainTextResponse(content=challenge or "", status_code=200)
     from fastapi import HTTPException; raise HTTPException(status_code=403)
 
-@app.post("/webhook/【entity-whatsapp¦canonical_name=WhatsApp】")
+@app.post("/webhook/whatsapp")
 async def receive_message(request: Request):
     body = await request.json(); print(body)
     try:
