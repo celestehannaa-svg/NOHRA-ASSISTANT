@@ -21,7 +21,7 @@ STOP_WORDS = ["nohra","bernard","broumana","antelias","adma","baabda","samak","s
 def extract_fish_name(raw):
     raw = raw.strip()
     if not raw: return ""
-    raw = re.sub(r"\d+\s*(?:oct|nov)", "", raw, flags=re.I)
+    raw = re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", "", raw, flags=re.I)
     raw = raw.upper()
     for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L","ZEDLE","GHAYER","GHAYERLE","L8I","SHELLE","SHIL","REMOVE","UPDATE"]:
         raw = raw.replace(bad,"")
@@ -33,6 +33,7 @@ def extract_fish_name(raw):
 
 def get_week_from_date(date_str):
     try:
+        # date_str like "04 Nov"
         dt = datetime.strptime(date_str + " 2025", "%d %b %Y")
         weekday = dt.weekday()
         if weekday == 0: tuesday = dt + timedelta(days=1)
@@ -42,7 +43,8 @@ def get_week_from_date(date_str):
             return f"{tuesday.day} - {sunday.day} {tuesday.strftime('%b')}"
         else:
             return f"{tuesday.day} {tuesday.strftime('%b')} - {sunday.day} {sunday.strftime('%b')}"
-    except: return "28 Oct - 2 Nov"
+    except:
+        return f"{date_str} Week"
 
 def detect_intent(text):
     if len(text) > 1500: return "ignore"
@@ -50,14 +52,21 @@ def detect_intent(text):
     t = text.lower().strip()
     if t in ["yes","y","ok","eh","na3am","YES","Yes","Y"]: return "yes_confirm"
     if t in ["no","n","la","la2","NO","No","N"]: return "no_confirm"
+    
+    # ADD = zedle FIRST (before delete check!)
     if "zedle" in t: return "add"
+    
+    # REMOVE = L8i / shelle / shil / remove
     remove_words = ["l8i", "shelle", "shil", "remove"]
     first = t.split()[0] if t.split() else ""
     if first in remove_words or any(t.startswith(w) for w in remove_words):
         return "delete"
+    
+    # UPDATE = ghayer / ghayerle / update
     update_words = ["ghayerle", "ghayer", "update"]
     if first in update_words or any(t.startswith(w) for w in update_words):
         return "update"
+    
     if re.search(r"\d+(?:\.\d+)?\s*k", t): return "add"
     return "general"
 
@@ -114,10 +123,22 @@ async def get_ws():
 
 def parse_msg(text):
     lines = text.strip().split("\n")
-    cur = "Nohra"; date_str="28 Oct"; where="Adma"
+    cur = "Nohra"
+    # === FIX: CAPTURE MONTH CORRECTLY ===
+    date_str="28 Oct"
+    where="Adma"
     first = lines[0].lower() if lines else ""
-    dm = re.search(r"(\d+)\s*(?:oct|nov)", first)
-    if dm: date_str = dm.group(1).zfill(2)+" Oct"
+    dm = re.search(r"(\d+)\s*(oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", first)
+    if dm:
+        day = dm.group(1).zfill(2)
+        mon = dm.group(2).capitalize()
+        # Fix Nov -> Nov, Dec -> Dec
+        if mon.lower().startswith("nov"): mon="Nov"
+        elif mon.lower().startswith("oct"): mon="Oct"
+        elif mon.lower().startswith("dec"): mon="Dec"
+        elif mon.lower().startswith("sep"): mon="Sep"
+        else: mon=mon[:3].capitalize()
+        date_str = f"{day} {mon}"
     if "broumana" in first: where="Broumana"
     if "antelias" in first: where="Antelias"
     if "adma" in first: where="Adma"
@@ -185,7 +206,6 @@ async def write_pending(phone):
                         exist_g = forms[i][3] if len(forms[i])>3 else row[3]
                     if len(row)>4 and row[4].strip() and not exist_p:
                         exist_p = forms[i][4] if len(forms[i])>4 else row[4]
-        # === FIX: FIND LAST GHASSAN & PROFIT FORMULA (not last row) ===
         last_g_formula=""; last_g_row=0
         last_p_formula=""; last_p_row=0
         for i in range(len(forms)-1, -1, -1):
@@ -198,11 +218,6 @@ async def write_pending(phone):
                     last_p_formula = forms[i][4]
                     last_p_row = i+1
             if last_g_formula and last_p_formula: break
-        # Fallback if not found
-        if not last_g_formula:
-            last_g_formula = "=SUM(ARRAYFORMULA(FILTER($J$2:$J, $B$2:$B = B{ROW}, $C$2:$C = C{ROW}) * IF(LOWER(FILTER($G$2:$G, $B$2:$B = B{ROW}, $C$2:$C = C{ROW})) = \"bezri\", 0, 1))))"
-        if not last_p_formula:
-            last_p_formula = "=SUMIFS($M:$M, $C:$C, C{ROW}, $B:$B, B{ROW}, $A:$A, A{ROW})"
         last=1
         for i in range(len(vals)-1,-1,-1):
             r=vals[i]
@@ -214,14 +229,20 @@ async def write_pending(phone):
         def sc(f,nr):
             if not f or "=" not in str(f): return ""
             return str(f).replace(str(last), str(nr))
-        # === FIX: BLANK ROW BETWEEN DIFFERENT DAYS ===
+        # === FIX BLANK ROW: ALWAYS ADD SPACE BETWEEN DIFFERENT DATES ===
         if not date_where_exists:
-            # Always add 1 blank row if last row has data (not blank)
-            if vals:
-                last_data_row = vals[-1]
-                # Check if last row is not blank
-                has_data = any(c.strip() for c in last_data_row[:7])
-                if has_data:
+            # Find last non-blank row
+            last_non_blank=None
+            for i in range(len(vals)-1, -1, -1):
+                r=vals[i]
+                if any(c.strip() for c in r[:7]):
+                    last_non_blank=r
+                    break
+            if last_non_blank:
+                last_date = last_non_blank[1].strip() if len(last_non_blank)>1 else ""
+                last_where = last_non_blank[2].strip().lower() if len(last_non_blank)>2 else ""
+                # If different date OR different where, add blank row
+                if last_date != plist[0]["date"] or last_where != plist[0]["where"].lower():
                     ws.append_row([""]*13, value_input_option="USER_ENTERED")
         added=0; upd=0; summ=[]
         group_has_ghassan = exist_g is not None and str(exist_g).strip()!=""
@@ -249,13 +270,12 @@ async def write_pending(phone):
                         row[3]=""; row[4]=""
                     else:
                         if idx==0:
-                            # FIX: Use last GHASSAN formula found, replace row number
                             if last_g_formula:
-                                row[3]=last_g_formula.replace(str(last_g_row), str(nr)).replace("{ROW}", str(nr))
+                                row[3]=last_g_formula.replace(str(last_g_row), str(nr))
                             else:
                                 row[3]=sc(last_f[3], nr)
                             if last_p_formula:
-                                row[4]=last_p_formula.replace(str(last_p_row), str(nr)).replace("{ROW}", str(nr))
+                                row[4]=last_p_formula.replace(str(last_p_row), str(nr))
                             else:
                                 row[4]=sc(last_f[4], nr)
                             group_has_ghassan=True
@@ -264,11 +284,11 @@ async def write_pending(phone):
                 else:
                     if idx==0:
                         if last_g_formula:
-                            row[3]=last_g_formula.replace(str(last_g_row), str(nr)).replace("{ROW}", str(nr))
+                            row[3]=last_g_formula.replace(str(last_g_row), str(nr))
                         else:
                             row[3]=sc(last_f[3], nr)
                         if last_p_formula:
-                            row[4]=last_p_formula.replace(str(last_p_row), str(nr)).replace("{ROW}", str(nr))
+                            row[4]=last_p_formula.replace(str(last_p_row), str(nr))
                         else:
                             row[4]=sc(last_f[4], nr)
                     else:
@@ -287,7 +307,7 @@ async def write_pending(phone):
         del PENDING[phone]
         if upd>0 and added==0: return f"Updated {upd}! {' + '.join(summ)}"
         elif added>0 and upd>0: return f"Added {added} + Updated {upd}! {' + '.join(summ)}"
-        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']} (blank row added)"
+        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']} Week:{plist[0]['week']}"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
 
@@ -309,7 +329,7 @@ async def handle(text, phone):
             for w in ["l8i","shelle","shil","remove"]:
                 target = target.replace(w, "")
             target = target.strip()
-            target = re.sub(r"\d+\s*(?:oct|nov)", "", target).strip()
+            target = re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", "", target).strip()
             for w in ["adma","broumana","antelias","baabda"]:
                 target = target.replace(w, "")
             target = target.strip()
@@ -321,8 +341,8 @@ async def handle(text, phone):
                 for i in range(len(vals)-1,0,-1):
                     r=vals[i]
                     if len(r)>6 and search_try in r[6].upper():
-                        if "oct" in t or "nov" in t:
-                            dm = re.search(r"(\d+)\s*(?:oct|nov)", t)
+                        if "oct" in t or "nov" in t or "dec" in t:
+                            dm = re.search(r"(\d+)\s*(?:oct|nov|dec|jan|feb)", t)
                             if dm and len(r)>1 and dm.group(1).zfill(2) not in r[1]: continue
                         if "adma" in t and len(r)>2 and "adma" not in r[2].lower(): continue
                         if "broumana" in t and len(r)>2 and "broumana" not in r[2].lower(): continue
@@ -349,7 +369,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL FIX - GHASSAN & PROFIT FORMULA FIXED + Blank Row + L8i shelle shil remove</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FIX - Week Nov Dec + Zedle FIX + Blank Row Between Dates + GHASSAN</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
