@@ -43,12 +43,13 @@ def detect_intent(t):
     if len(t)>1500: return "ignore"
     if "def " in t and "return" in t: return "ignore"
     s=t.lower().strip()
-    if s in ["yes","y","ok","eh","na3am"]: return "yes_confirm"
-    if s in ["no","n","la","la2"]: return "no_confirm"
+    if s in ["yes","y","ok","eh","na3am","aye","نعم","ايه"]: return "yes_confirm"
+    if s in ["no","n","la","la2","لا"]: return "no_confirm"
     if "zedle" in s: return "add"
     if any(w in s for w in ["l8i","shelle","shil","remove","l8e","الغي","شيل","امسح"]): return "delete"
-    if any(w in s for w in ["ghayerle","ghayer","update","غير"]): return "update"
-    if re.search(r"\d+(?:\.\d+)?\s*(?:kilo|kg|k)\b",s): return "add"
+    if any(w in s for w in ["ghayerle","ghayer","update","غير","غيّر"]): return "update"
+    if re.search(r"\d+(?:\.\d+)?\s*(?:kilo|kg|k|كيلو)\b",s): return "add"
+    if any(w in s for w in ["asfar","malifa","sarghous","jrawe","abyad","aarmout","ghobbos","bezri","faride","bra2","lo2os","mwasta","sultan"]): return "add"
     return "general"
 
 async def download_media(mid):
@@ -57,29 +58,45 @@ async def download_media(mid):
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.get(f"https://graph.facebook.com/v19.0/{mid}",headers={"Authorization":f"Bearer {env['WHATSAPP_TOKEN']}"})
             url=r.json().get("url")
-            if not url: return None
+            if not url: 
+                print("No url in media")
+                return None
             r2=await c.get(url,headers={"Authorization":f"Bearer {env['WHATSAPP_TOKEN']}"})
             return r2.content
-    except: return None
+    except Exception as e:
+        print(f"Download err {e}")
+        return None
 
 async def transcribe_voice(mid):
     env=get_env()
-    if not env["OPENAI_KEY"]: return None
+    if not env["OPENAI_KEY"]:
+        print("No OPENAI_KEY")
+        return None
     try:
         content=await download_media(mid)
-        if not content: return None
+        if not content: 
+            print("Voice download failed")
+            return None
+        print(f"Voice size {len(content)}")
         with tempfile.NamedTemporaryFile(suffix=".ogg",delete=False) as f:
             f.write(content); p=f.name
-        async with httpx.AsyncClient(timeout=60) as c:
+        async with httpx.AsyncClient(timeout=90) as c:
             with open(p,"rb") as af:
-                r=await c.post("https://api.openai.com/v1/audio/transcriptions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}"},files={"file":(p,af,"audio/ogg")},data={"model":"whisper-1","prompt":"Nohra fish shop Lebanese zedle l8i shelle ghayerle Asfar Malifa Jarbide Bra Bezri Faride Jrawe Kalamari Bernard Nohra Antelias kilo"})
+                r=await c.post("https://api.openai.com/v1/audio/transcriptions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}"},files={"file":(p,af,"audio/ogg")},data={"model":"whisper-1","language":"ar","prompt":"Nohra fish Lebanese zedle l8i shelle ghayerle Asfar Malifa Jarbide Bra2 Bezri Faride Jrawe Kalamari Aarmout Sarghous Abyad Ghobbos Mwasta Sultan Bernard Nohra Antelias Adma Broumana Baabda kilo"})
                 j=r.json()
-                print(f"VOICE:{j}")
-                txt=j.get("text","")
-                txt=txt.replace("الغي","l8i").replace("شيل","shelle").replace("زيدلي","zedle").replace("غيرلي","ghayerle").replace("نعم","yes").replace("لا","no")
+                print(f"VOICE RAW:{j}")
+                if "text" not in j:
+                    print(f"Whisper no text {j}")
+                    return None
+                txt=j.get("text","").strip()
+                if not txt:
+                    return None
+                txt=txt.replace("الغي","l8i").replace("شيل","shelle").replace("زيدلي","zedle").replace("زيد لي","zedle").replace("غيرلي","ghayerle").replace("غير لي","ghayerle").replace("نعم","yes").replace("لا","no").replace("كليو","kilo").replace("كيلو","kilo")
+                txt=txt.replace("أصفر","Asfar").replace("مليفة","Malifa").replace("جربيدي","Jarbide").replace("برا","Bra2").replace("قريدس","Jrawe")
+                print(f"VOICE CLEAN:{txt}")
                 return txt
     except Exception as e:
-        print(f"Voice err {e}"); return None
+        print(f"Voice err {e}"); traceback.print_exc(); return None
 
 async def read_image(mid,cap=""):
     env=get_env()
@@ -88,7 +105,7 @@ async def read_image(mid,cap=""):
         content=await download_media(mid)
         if not content: return cap
         b64=base64.b64encode(content).decode()
-        prompt=f"Caption is boss: {cap}. Date from caption 25 Oct. Asfar=Nohra rest=Bernard. Count rows only, no hallucination. Weight=وزن column grams/1000. Map: ASFAR, BRA2, JARBIDE, MALIFA, BEZRI, FARIDE, JRAWE, KALAMARI"
+        prompt=f"Caption is boss: {cap}. Count exact rows only, no hallucination. Weight=وزن column grams/1000. Map: ASFAR, BRA2, JARBIDE, MALIFA, BEZRI, FARIDE, JRAWE, KALAMARI"
         async with httpx.AsyncClient(timeout=45) as c:
             r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o","messages":[{"role":"system","content":f"Caption:{cap} Date 25 Oct Asfar Nohra rest Bernard Weight=وزن/1000"},{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}","detail":"high"}}]}],"temperature":0})
             j=r.json()
@@ -124,6 +141,9 @@ def parse_msg(text):
     if "asfar" in low_all and "nohra" in low_all: special["ASFAR"]="Nohra"
     if "antelias" in low_all: cur_where="Antelias"
     if "adma" in low_all: cur_where="Adma"
+    if "broumana" in low_all: cur_where="Broumana"
+    if "baabda" in low_all: cur_where="Baabda"
+    if "nohra" in low_all and "bernard" not in low_all: default="Nohra"
     for orig in lines:
         orig=orig.strip()
         if not orig: continue
@@ -145,7 +165,7 @@ def parse_msg(text):
             fish_raw=re.sub(r"^(and|w|\+|,|asfar:|bernard:|nohra:)\s*","",fish_raw,flags=re.I).strip()
             if ":" in fish_raw and len(fish_raw.split(":")[0])<10: fish_raw=fish_raw.split(":")[-1]
             fish_clean=extract_fish_name(fish_raw)
-            if fish_clean and fish_clean.lower() not in STOP and len(fish_clean)>=2:
+            if fish_clean and fish_clean.lower() not in [s.lower() for s in STOP] and len(fish_clean)>=2:
                 sup=cur_sup
                 if fish_clean.upper() in special: sup=special[fish_clean.upper()]
                 elif fish_clean.upper()!="ASFAR" and "rest la bernard" in low_all: sup="Bernard"
@@ -209,13 +229,16 @@ async def write_pending(phone):
                 added+=1
         del PENDING[phone]
         if added==0 and updated>0: return f"Updated {updated}! Wazen + Retail formulas fixed! {plist[0]['date']}"
-        return f"Zabtet {added} new {updated} updated! Retail formulas copied! {plist[0]['date']}"
+        return f"Zabtet {added} new {updated} updated! Retail+Profit formulas copied! {plist[0]['date']}"
     except Exception as e:
         traceback.print_exc(); return f"Error:{e}"
 
 async def handle(text,phone):
     print(f"HANDLE:{text}")
+    if not text or len(text.strip())<2:
+        return "Eh ma fehmet, eb3at voice wadih: Zedle Asfar 4 kilo 25 Oct Antelias Bernard"
     intent=detect_intent(text)
+    print(f"INTENT:{intent}")
     if intent=="ignore": return None
     if intent=="yes_confirm":
         if phone in PENDING: return await write_pending(phone)
@@ -231,7 +254,7 @@ async def handle(text,phone):
             t=re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)","",t).strip()
             for w in ["adma","broumana","antelias","baabda"]: t=t.replace(w,"")
             parts=[p for p in t.split() if len(p)>=3]
-            if not parts: return "Eb3at: L8i sultan - voice kamen!"
+            if not parts: return "Eb3at: L8i sultan - voice kamen byemche!"
             st=parts[0].upper()
             for i in range(len(vals)-1,0,-1):
                 r=vals[i]
@@ -239,7 +262,10 @@ async def handle(text,phone):
             return f"Ma la2et {st}"
         if intent in ["add","update"]:
             parsed=parse_msg(text)
-            if not parsed: return "Eh ma fehmet, eb3at: zedle sultan 5 kilo - voice!"
+            if not parsed: 
+                if any(w in text.lower() for w in ["asfar","malifa","sarghous","jrawe","abyad","aarmout"]):
+                    return "Eh sem3et el samak bas ma fehmet el wazen, erja3 oul: Asfar 4 kilo 25 Oct Antelias Bernard - oul kilo wadih!"
+                return "Eh ma fehmet, eb3at: Zedle sultan 5 kilo 25 Oct Antelias Bernard"
             PENDING[phone]=parsed; lines=[]
             for p in parsed: lines.append(f"{p['fish']} {p['kg']}kg {p['supplier']} {p['date']} {p['where']}")
             summ="\n".join(lines); dates=list(set([p["date"] for p in parsed]))
@@ -250,14 +276,20 @@ async def handle(text,phone):
     if env["OPENAI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra Assistant. Speak ONLY Lebanese Arabizi. Short 1-2 lines."},{"role":"user","content":text}]})
-                return r.json()["choices"][0]["message"]["content"][:400]
-        except: return "Eh ma fehmet"
-    return "Eh ma fehmet"
+                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra Assistant. You MUST reply ONLY in Lebanese Arabizi using Latin letters. Use: eh, chou, kif, ma fehmet, zabtet, hek, wadih, erja3. NEVER use Arabic script, NEVER use Fusha Arabic. If user voice unclear say: Eh ma sem3tak mnih, erja3 oul: Zedle Asfar 4 kilo 25 Oct Antelias Bernard - oul el kilo wadih! Keep short 1-2 lines."},{"role":"user","content":text}]})
+                j=r.json()
+                txt=j["choices"][0]["message"]["content"][:400]
+                if any("\u0600" <= ch <= "\u06FF" for ch in txt):
+                    return "Eh ma fehmet, erja3 eb3at: Zedle Asfar 4 kilo 25 Oct Antelias Bernard - voice kamen!"
+                return txt
+        except Exception as e:
+            print(e)
+            return "Eh ma sem3tak mnih, erja3 oul: Zedle Asfar 4 kilo 25 Oct Antelias Bernard"
+    return "Eh ma fehmet, eb3at: Zedle Asfar 4 kilo 25 Oct Antelias Bernard"
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL VOICE+RETAIL - small file deploys</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FULL - Voice+Retail+Arabizi Only - LIVE</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
@@ -274,15 +306,22 @@ async def receive(request: Request):
         elif mtype in ["audio","voice"]: txt=await transcribe_voice(msg[mtype]["id"]) or ""
         elif mtype=="image": txt=await read_image(msg["image"]["id"],msg["image"].get("caption",""))
         else: txt=msg.get("text",{}).get("body","Hello")
-        if not txt: return {"ok":True}
+        if not txt:
+            print("Empty txt after transcription")
+            txt="ma fehmet voice"
         reply=await handle(txt,frm)
+        if not reply:
+            return {"ok":True}
+        print(f"REPLY:{reply}")
         env=get_env()
         if env["WHATSAPP_TOKEN"]:
             async with httpx.AsyncClient(timeout=20) as c2:
                 url=f"https://graph.facebook.com/v19.0/{env['PHONE_ID']}/messages"
                 headers={"Authorization":f"Bearer {env['WHATSAPP_TOKEN']}"}
                 payload={"messaging_product":"whatsapp","to":frm,"type":"text","text":{"body":reply[:1500]}}
-                await c2.post(url,headers=headers,json=payload)
+                r=c2.post(url,headers=headers,json=payload)
+                resp=await r
+                print(f"WA send {resp.status_code}")
         return {"sent":True}
     except Exception as e:
         traceback.print_exc(); return {"error":str(e)}
