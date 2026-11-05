@@ -23,7 +23,7 @@ def extract_fish_name(raw):
     if not raw: return ""
     raw = re.sub(r"\d+\s*(?:oct|nov)", "", raw, flags=re.I)
     raw = raw.upper()
-    for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L"]:
+    for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L","ZEDLE","GHAYER","GHAYERLE","L8I","SHELLE","SHIL","REMOVE","UPDATE"]:
         raw = raw.replace(bad,"")
     raw = re.sub(r"\$?\d+(\.\d+)?", "", raw)
     raw = " ".join(raw.split()).strip()
@@ -50,10 +50,22 @@ def detect_intent(text):
     t = text.lower().strip()
     if t in ["yes","y","ok","eh","na3am","YES","Yes","Y"]: return "yes_confirm"
     if t in ["no","n","la","la2","NO","No","N"]: return "no_confirm"
-    delete_words = ["msah","emsah","shil","chil","shilo","shile","l8ile","l8e","l8i","leghe","ilghe","l8il","cancel","delete","remove","returned","return","rajja3","rja3","reddo","rad","aarmout","mwasta"]
-    if any(w in t for w in delete_words): return "delete"
-    if any(w in t for w in ["update","change","ghayir"]): return "update"
-    if "kilo" in t or "kg" in t: return "add"
+    
+    # ADD = zedle
+    if "zedle" in t: return "add"
+    
+    # REMOVE = L8i / shelle / shil / remove = SAME COMMAND
+    remove_words = ["l8i", "shelle", "shil", "remove"]
+    first = t.split()[0] if t.split() else ""
+    if first in remove_words or any(t.startswith(w) for w in remove_words):
+        return "delete"
+    
+    # UPDATE = ghayer / ghayerle / update = SAME COMMAND
+    update_words = ["ghayerle", "ghayer", "update"]
+    if first in update_words or any(t.startswith(w) for w in update_words):
+        return "update"
+    
+    if re.search(r"\d+(?:\.\d+)?\s*k", t): return "add"
     return "general"
 
 async def download_media(media_id):
@@ -250,54 +262,50 @@ async def handle(text, phone):
         if intent=="delete":
             t = text.lower()
             target = t
-            for w in ["shil","chil","shilo","l8ile","l8e","l8i","leghe","ilghe","msah","emsah","delete","remove","cancel","returned","rajja3","rja3","reddo","rad"]:
+            for w in ["l8i","shelle","shil","remove"]:
                 target = target.replace(w, "")
             target = target.strip()
-            # Try any fish from dropdown list in message
-            search_term = ""
-            # Match any word that looks like fish (any uppercase)
-            fm = re.search(r"([a-z]{3,}(?:\s+[a-z]{3,})?)", target)
-            if fm:
-                search_term = fm.group(1).upper().strip()
-            else:
-                parts = target.split()
-                if parts: search_term = parts[0].upper()
-                else: return "Eb3at: shil sultan, l8ile mwasta, shil aarmout"
-            is_return = any(w in t for w in ["return","rajja3","rja3","reddo","rad"])
+            target = re.sub(r"\d+\s*(?:oct|nov)", "", target).strip()
+            for w in ["adma","broumana","antelias","baabda"]:
+                target = target.replace(w, "")
+            target = target.strip()
+            parts = [p for p in target.split() if len(p)>=3]
+            if not parts: return "Eb3at: L8i sultan, shelle mwasta, shil aarmout, remove bezri"
+            search_term = parts[0].upper()
+            search_term_full = (parts[0]+" "+parts[1]).upper() if len(parts)>=2 else search_term
             kilos = re.findall(r"(\d+(?:\.\d+)?)\s*k", t)
-            for i in range(len(vals)-1,0,-1):
-                r=vals[i]
-                if len(r)>6 and search_term in r[6].upper():
-                    if "oct" in t or "nov" in t:
-                        dm = re.search(r"(\d+)\s*(?:oct|nov)", t)
-                        if dm and len(r)>1 and dm.group(1).zfill(2) not in r[1]: continue
-                    if "adma" in t and len(r)>2 and "adma" not in r[2].lower(): continue
-                    if "broumana" in t and len(r)>2 and "broumana" not in r[2].lower(): continue
-                    if "antelias" in t and len(r)>2 and "antelias" not in r[2].lower(): continue
-                    if is_return and kilos:
-                        try:
-                            cur_q = float(r[9]) if len(r)>9 and r[9] else 0
-                            ret_q = float(kilos[0])
-                            new_q = cur_q - ret_q
-                            if new_q <= 0:
+            is_return = "return" in t
+            for search_try in [search_term, search_term_full]:
+                for i in range(len(vals)-1,0,-1):
+                    r=vals[i]
+                    if len(r)>6 and search_try in r[6].upper():
+                        if "oct" in t or "nov" in t:
+                            dm = re.search(r"(\d+)\s*(?:oct|nov)", t)
+                            if dm and len(r)>1 and dm.group(1).zfill(2) not in r[1]: continue
+                        if "adma" in t and len(r)>2 and "adma" not in r[2].lower(): continue
+                        if "broumana" in t and len(r)>2 and "broumana" not in r[2].lower(): continue
+                        if "antelias" in t and len(r)>2 and "antelias" not in r[2].lower(): continue
+                        if is_return and kilos:
+                            try:
+                                cur_q = float(r[9]) if len(r)>9 and r[9] else 0
+                                ret_q = float(kilos[0])
+                                new_q = cur_q - ret_q
+                                if new_q <= 0:
+                                    ws.delete_rows(i+1)
+                                    return f"✅ Deleted {search_try} row {i+1}!"
+                                else:
+                                    ws.update(f"J{i+1}", [[str(new_q)]], value_input_option="USER_ENTERED")
+                                    return f"✅ Updated {search_try} {new_q}kg row {i+1}!"
+                            except:
                                 ws.delete_rows(i+1)
-                                return f"✅ Deleted {search_term} row {i+1}!"
-                            else:
-                                ws.update(f"J{i+1}", [[str(new_q)]], value_input_option="USER_ENTERED")
-                                return f"✅ Updated {search_term} {new_q}kg row {i+1}!"
-                        except:
+                                return f"✅ Deleted {search_try} row {i+1}!"
+                        else:
                             ws.delete_rows(i+1)
-                            return f"✅ Deleted {search_term} row {i+1}!"
-                    else:
-                        ws.delete_rows(i+1)
-                        return f"✅ Deleted {search_term} row {i+1}!"
+                            return f"✅ Deleted {search_try} row {i+1}!"
             return f"❌ Ma la2et {search_term}"
-        if intent in ["add","general"]:
+        if intent in ["add","update"]:
             parsed = parse_msg(text)
-            if not parsed: 
-                if any(w in text.lower() for w in ["shil","l8ile","msah"]):
-                    return await handle("shil "+text, phone)
-                return None
+            if not parsed: return None
             PENDING[phone]=parsed
             lines=[]
             for p in parsed:
@@ -306,14 +314,15 @@ async def handle(text, phone):
                 else: pr=""
                 lines.append(f"{p['fish']} {p['kg']}kg {pr} {p['supplier']}".strip())
             summ="\n".join(lines)
-            return f"Rah zid hek:\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}\n\nConfirm? YES / NO"
+            action = "Rah ghayir hek:" if intent=="update" else "Rah zid hek:"
+            return f"{action}\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}\n\nConfirm? YES / NO"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
     return None
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - ANY 1318 Fish + shil l8ile aarmout mwasta + I/89 + GHASSAN 1 per day</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - ADD zedle | REMOVE L8i shelle shil remove | UPDATE ghayer ghayerle</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
