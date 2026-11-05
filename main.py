@@ -16,18 +16,20 @@ def get_env():
     if gc.startswith("'") and gc.endswith("'"): gc = gc[1:-1]
     return {"WHATSAPP_TOKEN": os.getenv("WHATSAPP_TOKEN",""), "PHONE_ID": os.getenv("WHATSAPP_PHONE_NUMBER_ID","1349671541570540"), "OPENAI_KEY": os.getenv("OPENAI_API_KEY",""), "GOOGLE_CREDS": gc}
 
-FISH_LIST = ["ghobbos","ajej","bra2","lo2os","frafir","sultan","filet","bezri","loz","jarbide","masta","ghazel","dakar","sarbout"]
+STOP_WORDS = ["nohra","bernard","broumana","antelias","adma","baabda","samak","se3er","unit","$","kilo","kg","lbp","zedle"]
 
 def extract_fish_name(raw):
-    raw_low = raw.lower()
-    for f in FISH_LIST:
-        if f in raw_low: return f.upper()
-    name = raw.upper()
-    name = re.sub(r"\d+\s*(?:OCT|NOV)", "", name)
+    raw = raw.strip()
+    if not raw: return ""
+    raw = re.sub(r"\d+\s*(?:oct|nov)", "", raw, flags=re.I)
+    raw = raw.upper()
     for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L"]:
-        name = name.replace(bad,"")
-    name = re.sub(r"\$?\d+(\.\d+)?", "", name)
-    return " ".join(name.split()).strip()[:20]
+        raw = raw.replace(bad,"")
+    raw = re.sub(r"\$?\d+(\.\d+)?", "", raw)
+    raw = " ".join(raw.split()).strip()
+    parts = raw.split()
+    if len(parts) > 2: raw = " ".join(parts[:2])
+    return raw[:30]
 
 def get_week_from_date(date_str):
     try:
@@ -48,11 +50,10 @@ def detect_intent(text):
     t = text.lower().strip()
     if t in ["yes","y","ok","eh","na3am","YES","Yes","Y"]: return "yes_confirm"
     if t in ["no","n","la","la2","NO","No","N"]: return "no_confirm"
-    delete_words = ["msah","emsah","shil","chil","shilo","shile","l8ile","l8e","l8i","leghe","ilghe","l8il","cancel","delete","remove","returned","return","rajja3","rja3","reddo","rad"]
+    delete_words = ["msah","emsah","shil","chil","shilo","shile","l8ile","l8e","l8i","leghe","ilghe","l8il","cancel","delete","remove","returned","return","rajja3","rja3","reddo","rad","aarmout","mwasta"]
     if any(w in t for w in delete_words): return "delete"
     if any(w in t for w in ["update","change","ghayir"]): return "update"
     if "kilo" in t or "kg" in t: return "add"
-    if any(f in t for f in FISH_LIST): return "add"
     return "general"
 
 async def download_media(media_id):
@@ -87,7 +88,7 @@ async def read_image(media_id, cap=""):
         if not content: return cap
         b64 = base64.b64encode(content).decode()
         async with httpx.AsyncClient(timeout=40) as c:
-            r = await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"}, json={"model":"gpt-4o-mini","messages":[{"role":"user","content":[{"type":"text","text":"Extract fish: "+cap},{"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}"}}]}]})
+            r = await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"}, json={"model":"gpt-4o-mini","messages":[{"role":"user","content":[{"type":"text","text":"Extract fish like 'sultan 5kilo 3$' from image. Cap: "+cap},{"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}"}}]}]})
             return r.json()["choices"][0]["message"]["content"]
     except: return cap
 
@@ -126,11 +127,11 @@ def parse_msg(text):
             head = parts[0].lower()
             if "bernard" in head: cur="Bernard"
             if "nohra" in head: cur="Nohra"
-            if len(parts)>1 and ("kilo" in parts[1].lower() or any(f in parts[1].lower() for f in FISH_LIST)):
+            if len(parts)>1 and "kilo" in parts[1].lower():
                 orig = parts[1].strip()
             else:
                 if len(parts)>1 and parts[1].strip()=="": continue
-                if "kilo" not in orig.lower() and not any(f in orig.lower() for f in FISH_LIST): continue
+                if "kilo" not in orig.lower(): continue
         low = orig.lower()
         km = re.search(r"(\d+(?:\.\d+)?)\s*k", low)
         if not km: continue
@@ -140,15 +141,14 @@ def parse_msg(text):
         if ":" in fish_raw: fish_raw = fish_raw.split(":")[-1]
         fish_clean = extract_fish_name(fish_raw)
         if not fish_clean: continue
+        if fish_clean.lower() in STOP_WORDS: continue
         price_d=""; price_l=""; ptype="none"
         pd = re.search(r"(\d+(?:\.\d+)?)\s*\$", orig)
         pd2 = re.search(r"\$\s*(\d+(?:\.\d+)?)", orig)
         pl = re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l|LL)", low)
-        pl2 = re.search(r"(?:lbp|l\.l|LL)\s*(\d+(?:\.\d+)?)", low)
         if pd: price_d="$"+pd.group(1); ptype="dollar"
         elif pd2: price_d="$"+pd2.group(1); ptype="dollar"
         elif pl: price_l=pl.group(1); ptype="lbp"
-        elif pl2: price_l=pl2.group(1); ptype="lbp"
         else:
             ps = re.search(r"se3er\s+(\d+(?:\.\d+)?)", low)
             if ps:
@@ -169,44 +169,18 @@ async def write_pending(phone):
         ws, target = await get_ws()
         vals = ws.get_all_values()
         forms = ws.get(f"A1:M{len(vals)}", value_render_option="FORMULA")
-
-        # --- FIX GHASSAN DUPLICATES: Keep only 1 per DATE+WHERE ---
-        seen = {}
-        to_clean = []
-        for i,row in enumerate(vals):
-            if i==0: continue
-            if len(row)>2 and row[1].strip() and row[2].strip():
-                key = (row[1].strip(), row[2].strip().lower())
-                if key in seen:
-                    # duplicate found -> blank GHASSAN + PROFIT if not blank
-                    if len(row)>3 and row[3].strip(): to_clean.append((i+1, "D"))
-                    if len(row)>4 and row[4].strip(): to_clean.append((i+1, "E"))
-                else:
-                    seen[key] = i+1
-        # Clean duplicates
-        for r_num, col in to_clean:
-            try:
-                ws.update(f"{col}{r_num}", [[""]], value_input_option="USER_ENTERED")
-            except: pass
-
-        # Re-read after clean
-        vals = ws.get_all_values()
-        forms = ws.get(f"A1:M{len(vals)}", value_render_option="FORMULA")
-
-        date_where_exists = False
-        exist_g = None; exist_p = None
+        date_where_exists=False; exist_g=None; exist_p=None
         check_key = (plist[0]["date"].strip(), plist[0]["where"].strip().lower())
         for i,row in enumerate(vals):
             if len(row)>2 and row[1].strip() and row[2].strip().lower():
                 k = (row[1].strip(), row[2].strip().lower())
                 if k == check_key:
-                    date_where_exists = True
+                    date_where_exists=True
                     if len(row)>3 and row[3].strip() and not exist_g:
                         exist_g = forms[i][3] if len(forms[i])>3 else row[3]
                     if len(row)>4 and row[4].strip() and not exist_p:
                         exist_p = forms[i][4] if len(forms[i])>4 else row[4]
                     break
-
         last=1
         for i in range(len(vals)-1,-1,-1):
             r=vals[i]
@@ -218,7 +192,6 @@ async def write_pending(phone):
         def sc(f,nr):
             if not f or "=" not in str(f): return ""
             return str(f).replace(str(last), str(nr))
-
         added=0; upd=0; summ=[]
         for idx,it in enumerate(plist):
             fidx=-1
@@ -233,14 +206,12 @@ async def write_pending(phone):
                 elif it["ptype"]=="lbp" and it["price_l"]:
                     ws.update(f"I{fidx}", [[it["price_l"]]], value_input_option="USER_ENTERED")
                     ws.update(f"H{fidx}", [[f"=I{fidx}/89"]], value_input_option="USER_ENTERED")
-                upd+=1; summ.append(f"Updated {it['fish']} {it['kg']}kg")
+                upd+=1; summ.append(f"{it['fish']} {it['kg']}kg")
             else:
                 nr = len(ws.get_all_values())+1
                 row=[""]*13
                 row[0]=it["week"]; row[1]=it["date"]; row[2]=it["where"]
-                # CRITICAL: Only first fish of NEW date+branch gets GHASSAN, rest blank!
-                if date_where_exists or idx>0:
-                    row[3]=""; row[4]=""
+                if date_where_exists or idx>0: row[3]=""; row[4]=""
                 else:
                     if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
                     else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else ""
@@ -248,12 +219,8 @@ async def write_pending(phone):
                     else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else ""
                 row[5]=it["supplier"]; row[6]=it["fish"]
                 if it["ptype"]=="dollar": row[7]=it["price_d"]; row[8]=""
-                elif it["ptype"]=="lbp":
-                    row[8]=it["price_l"]
-                    row[7]=f"=I{nr}/89"
-                else:
-                    row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""
-                    row[8]=""
+                elif it["ptype"]=="lbp": row[8]=it["price_l"]; row[7]=f"=I{nr}/89"
+                else: row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""; row[8]=""
                 row[9]=it["kg"]
                 if len(last_f)>10: row[10]=sc(last_f[10], nr)
                 if len(last_f)>11: row[11]=sc(last_f[11], nr)
@@ -261,12 +228,10 @@ async def write_pending(phone):
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1; summ.append(f"{it['fish']} {it['kg']}kg {it['supplier']}")
                 date_where_exists=True
-
         del PENDING[phone]
-        clean_msg = f" + Cleaned {len(to_clean)} duplicate GHASSAN" if to_clean else ""
-        if upd>0 and added==0: return f"Updated {upd}! {' + '.join(summ)}{clean_msg}"
-        elif added>0 and upd>0: return f"Added {added} + Updated {upd}! {' + '.join(summ)}{clean_msg}"
-        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']}{clean_msg}"
+        if upd>0 and added==0: return f"Updated {upd}! {' + '.join(summ)}"
+        elif added>0 and upd>0: return f"Added {added} + Updated {upd}! {' + '.join(summ)}"
+        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']}"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
 
@@ -277,64 +242,78 @@ async def handle(text, phone):
         if phone in PENDING: return await write_pending(phone)
         return "Ma fi pending"
     if intent=="no_confirm":
-        if phone in PENDING: del PENDING[phone]; return "❌ Ok ma zedet - l8ile"
+        if phone in PENDING: del PENDING[phone]; return "❌ Ok ma zedet"
         return "Ok"
     try:
         ws,_ = await get_ws()
         vals = ws.get_all_values()
         if intent=="delete":
-            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet|bezri|loz|jarbide|masta|ghazel|dakar|sarbout)", text.lower())
-            is_return = any(w in text.lower() for w in ["return","rajja3","rja3","reddo","rad"])
-            kilos = re.findall(r"(\d+(?:\.\d+)?)\s*k", text.lower())
+            t = text.lower()
+            target = t
+            for w in ["shil","chil","shilo","l8ile","l8e","l8i","leghe","ilghe","msah","emsah","delete","remove","cancel","returned","rajja3","rja3","reddo","rad"]:
+                target = target.replace(w, "")
+            target = target.strip()
+            # Try any fish from dropdown list in message
+            search_term = ""
+            # Match any word that looks like fish (any uppercase)
+            fm = re.search(r"([a-z]{3,}(?:\s+[a-z]{3,})?)", target)
             if fm:
-                ft=fm.group(1).upper()
-                for i in range(len(vals)-1,0,-1):
-                    r=vals[i]
-                    if len(r)>6 and ft in r[6].upper():
-                        if "oct" in text.lower() or "nov" in text.lower():
-                            dm = re.search(r"(\d+)\s*(?:oct|nov)", text.lower())
-                            if dm and len(r)>1 and dm.group(1).zfill(2) not in r[1]: continue
-                        if "adma" in text.lower() and len(r)>2 and "adma" not in r[2].lower(): continue
-                        if "broumana" in text.lower() and len(r)>2 and "broumana" not in r[2].lower(): continue
-                        if "antelias" in text.lower() and len(r)>2 and "antelias" not in r[2].lower(): continue
-                        if is_return and kilos:
-                            try:
-                                cur_q = float(r[9]) if len(r)>9 and r[9] else 0
-                                ret_q = float(kilos[0])
-                                new_q = cur_q - ret_q
-                                if new_q <= 0:
-                                    ws.delete_rows(i+1)
-                                    return f"✅ Returned all {ft} {ret_q}kg - deleted row {i+1}!"
-                                else:
-                                    ws.update(f"J{i+1}", [[str(new_q)]], value_input_option="USER_ENTERED")
-                                    return f"✅ Returned {ft} {ret_q}kg - new {new_q}kg!"
-                            except:
+                search_term = fm.group(1).upper().strip()
+            else:
+                parts = target.split()
+                if parts: search_term = parts[0].upper()
+                else: return "Eb3at: shil sultan, l8ile mwasta, shil aarmout"
+            is_return = any(w in t for w in ["return","rajja3","rja3","reddo","rad"])
+            kilos = re.findall(r"(\d+(?:\.\d+)?)\s*k", t)
+            for i in range(len(vals)-1,0,-1):
+                r=vals[i]
+                if len(r)>6 and search_term in r[6].upper():
+                    if "oct" in t or "nov" in t:
+                        dm = re.search(r"(\d+)\s*(?:oct|nov)", t)
+                        if dm and len(r)>1 and dm.group(1).zfill(2) not in r[1]: continue
+                    if "adma" in t and len(r)>2 and "adma" not in r[2].lower(): continue
+                    if "broumana" in t and len(r)>2 and "broumana" not in r[2].lower(): continue
+                    if "antelias" in t and len(r)>2 and "antelias" not in r[2].lower(): continue
+                    if is_return and kilos:
+                        try:
+                            cur_q = float(r[9]) if len(r)>9 and r[9] else 0
+                            ret_q = float(kilos[0])
+                            new_q = cur_q - ret_q
+                            if new_q <= 0:
                                 ws.delete_rows(i+1)
-                                return f"✅ Deleted {ft} row {i+1}!"
-                        else:
+                                return f"✅ Deleted {search_term} row {i+1}!"
+                            else:
+                                ws.update(f"J{i+1}", [[str(new_q)]], value_input_option="USER_ENTERED")
+                                return f"✅ Updated {search_term} {new_q}kg row {i+1}!"
+                        except:
                             ws.delete_rows(i+1)
-                            return f"✅ Deleted {ft} row {i+1}! l8ile!"
-                return f"❌ Ma la2et {ft}"
-            return "Eb3at: shil sultan, l8ile sultan"
-        if intent=="add":
+                            return f"✅ Deleted {search_term} row {i+1}!"
+                    else:
+                        ws.delete_rows(i+1)
+                        return f"✅ Deleted {search_term} row {i+1}!"
+            return f"❌ Ma la2et {search_term}"
+        if intent in ["add","general"]:
             parsed = parse_msg(text)
-            if not parsed: return None
+            if not parsed: 
+                if any(w in text.lower() for w in ["shil","l8ile","msah"]):
+                    return await handle("shil "+text, phone)
+                return None
             PENDING[phone]=parsed
             lines=[]
             for p in parsed:
                 if p["ptype"]=="dollar": pr=p["price_d"]
-                elif p["ptype"]=="lbp": pr=p["price_l"]+" LBP -> $= LBP/89"
-                else: pr="no price yet"
-                lines.append(f"{p['fish']} {p['kg']}kg {pr} {p['supplier']}")
+                elif p["ptype"]=="lbp": pr=p["price_l"]+" LBP"
+                else: pr=""
+                lines.append(f"{p['fish']} {p['kg']}kg {pr} {p['supplier']}".strip())
             summ="\n".join(lines)
-            return f"Rah zid hek:\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}\n\nGHASSAN 1 per date/branch only!\n\nConfirm? YES / NO"
+            return f"Rah zid hek:\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}\n\nConfirm? YES / NO"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
     return None
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - Formula I/89 + GHASSAN 1 per day cleaned + shil l8ile</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - ANY 1318 Fish + shil l8ile aarmout mwasta + I/89 + GHASSAN 1 per day</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
@@ -356,13 +335,14 @@ async def receive(request: Request):
         reply=await handle(txt, frm)
         if not reply:
             env=get_env()
-            if env["OPENAI_KEY"] and detect_intent(txt)=="general":
+            if env["OPENAI_KEY"]:
                 try:
                     async with httpx.AsyncClient(timeout=20) as c:
                         r=await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"}, json={"model":"gpt-4o-mini","messages":[{"role":"user","content":f"Reply short Arabizi: {txt}"}]})
                         reply=r.json()["choices"][0]["message"]["content"][:500]
                 except: reply="OK Nohra"
-            else: reply="Ma fhemet: "+txt[:100]
+            else: reply=None
+            if not reply: return {"ok": True}
         env=get_env()
         if env["WHATSAPP_TOKEN"]:
             async with httpx.AsyncClient(timeout=20) as c2:
