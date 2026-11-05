@@ -41,7 +41,6 @@ async def add_to_fish_sheet(text):
         client = gspread.authorize(creds)
         sheet = client.open_by_key(FISH_SHEET_ID)
         all_sheets = [s.title for s in sheet.worksheets()]
-        print(all_sheets)
         target_title = ""
         for title in all_sheets:
             low = title.lower()
@@ -57,9 +56,24 @@ async def add_to_fish_sheet(text):
             target_title = all_sheets[0]
         ws = sheet.worksheet(target_title)
         print("Using tab: " + target_title)
+
+        # Get last row with data to copy formulas and dropdowns
+        all_values = ws.get_all_values()
+        last_row_num = len(all_values)
+        # Find last non-empty row
+        while last_row_num > 1 and all(not v.strip() for v in all_values[last_row_num-1]):
+            last_row_num -= 1
+        
+        # Get formulas from last row (to copy GHASSAN, Total PROFIT, Fish Retail, etc.)
+        try:
+            last_row_formulas = ws.get(f"A{last_row_num}:M{last_row_num}", value_render_option="FORMULA")[0]
+        except:
+            last_row_formulas = [""]*13
+        print("Last row formulas: " + str(last_row_formulas))
+
         lines = text.strip().split("\n")
         current_supplier = "Nohra"
-        date_str = "05 Nov"
+        date_str = "21 Oct"
         where = "Broumana"
         week = "20 - 25 Oct"
         first_lower = lines[0].lower() if lines else ""
@@ -67,108 +81,6 @@ async def add_to_fish_sheet(text):
         if dm:
             day = dm.group(1).zfill(2)
             date_str = day + " Oct"
-            week = date_str
+            week = "20 - 25 Oct"
         if "broumana" in first_lower:
             where = "Broumana"
-        if "antelias" in first_lower:
-            where = "Antelias"
-        if "adma" in first_lower:
-            where = "Adma"
-        if "bernard" in first_lower:
-            current_supplier = "Bernard"
-        added = 0
-        summary = []
-        for line in lines:
-            orig = line.strip()
-            if not orig:
-                continue
-            low = orig.lower()
-            if len(orig) > 200:
-                continue
-            if ":" in orig and "kilo" not in low[:35]:
-                parts = orig.split(":",1)
-                head = parts[0].lower()
-                if "bernard" in head:
-                    current_supplier = "Bernard"
-                if "nohra" in head:
-                    current_supplier = "Nohra"
-                if len(parts)>1 and "kilo" in parts[1].lower():
-                    orig = parts[1].strip()
-                    low = orig.lower()
-                else:
-                    continue
-            km = re.search(r"(\d+(?:\.\d+)?)\s*k", low)
-            if not km:
-                continue
-            kg = km.group(1)
-            idx = low.find(km.group(0).lower())
-            fish_raw = orig[:idx].strip()
-            if ":" in fish_raw:
-                fish_raw = fish_raw.split(":")[-1].strip()
-            fish_clean = fish_raw.upper()
-            for bad in ["NOHRA","BERNARD","GHASSAN","BROUMANA","ANTELIAS","ADMA","ZEDLE","SAMAK","SE3ER","UNIT","$","KILO"]:
-                fish_clean = fish_clean.replace(bad,"")
-            fish_clean = " ".join(fish_clean.split()).strip()
-            if not fish_clean:
-                continue
-            price = ""
-            pm = re.search(r"(\d+(?:\.\d+)?)\$", orig)
-            if pm:
-                price = "$" + pm.group(1)
-            row = [""]*13
-            row[0]=week
-            row[1]=date_str
-            row[2]=where
-            row[5]=current_supplier
-            row[6]=fish_clean
-            row[7]=price
-            row[9]=kg
-            ws.append_row(row, value_input_option="USER_ENTERED")
-            added+=1
-            summary.append(fish_clean + " " + kg + "kg")
-            print("Added: " + str(row))
-        if added==0:
-            return None
-        summary_text = " + ".join(summary)
-        return "Zedle " + str(added) + " samak 3al " + target_title + "! " + summary_text + " - " + where + " " + current_supplier + " " + date_str
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(tb)
-        return "Error: " + str(e)[:400]
-
-app = FastAPI()
-
-@app.get("/")
-async def root():
-    env = get_env()
-    has_token = str(bool(env["WHATSAPP_TOKEN"]))
-    creds_len = str(len(env["GOOGLE_CREDS"]))
-    html = "<h2>Nohra Live OK - profit daily</h2><p>token:" + has_token + " creds:" + creds_len + "</p>"
-    return HTMLResponse(content=html)
-
-@app.get("/webhook/whatsapp")
-async def verify_webhook(request: Request):
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return PlainTextResponse(content=challenge or "", status_code=200)
-    from fastapi import HTTPException
-    raise HTTPException(status_code=403)
-
-@app.post("/webhook/whatsapp")
-async def receive_message(request: Request):
-    body = await request.json()
-    print(body)
-    try:
-        val = body["entry"][0]["changes"][0]["value"]
-        if "messages" not in val:
-            return {"ok": True}
-        msg = val["messages"][0]
-        from_num = msg["from"]
-        txt = msg["text"]["body"] if msg.get("type")=="text" else "Hello"
-        dept = detect_department(txt)
-        if dept=="ignore":
-            return {"ok": True}
-        reply = await add_to_fish_sheet(txt)
-        if not reply:
