@@ -8,6 +8,9 @@ load_dotenv()
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "nohra_verify_2024")
 FISH_SHEET_ID = "1_U7Mz0eKj8x3nWDvCSkRXkDgyYIEhYupJNJ0-DSskss"
 
+# Memory for confirmation: {phone: {pending fish list}}
+PENDING = {}
+
 def get_env():
     load_dotenv(override=True)
     gc = os.getenv("GOOGLE_CREDENTIALS_JSON","")
@@ -20,25 +23,41 @@ def get_env():
         "GOOGLE_CREDS": gc,
     }
 
-def clean_fish_name(raw):
-    # Remove date, zedle, where, supplier, se3er, unit, $, kilo numbers
+# Known fish list - keep exact spelling
+FISH_LIST = ["ghobbos","ajej","bra2","lo2os","frafir","sultan","filet","bezri","loz","jarbide","masta","ghazel","dakar","sarbout","dakr","ghzazel","msasta","kalamari","serma","erna","mesaar","ghazal","sandou","aarmout","ghobbo","lo2oz"]
+
+def extract_fish_name(raw):
+    raw_low = raw.lower()
+    # Find known fish in raw
+    for f in FISH_LIST:
+        if f in raw_low:
+            return f.upper()  # Keep as BRA2, not BRA
+    # Fallback: clean
     name = raw.upper()
-    name = re.sub(r"\d+\s*(?:OCT|NOV)", "", name)  # Remove 22 OCT, 5 NOV
+    name = re.sub(r"\d+\s*(?:OCT|NOV)", "", name)
     name = re.sub(r"ZEDLE", "", name)
-    name = re.sub(r"\b\d{1,2}\b", "", name)  # Remove lone numbers like 22
     for bad in ["NOHRA","BERNARD","GHASSAN","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","SE3R"]:
         name = name.replace(bad,"")
-    name = re.sub(r"\$?\d+(\.\d+)?", "", name)  # Remove $10, 10$
+    name = re.sub(r"\$?\d+(\.\d+)?", "", name)
     name = " ".join(name.split()).strip()
+    # If still long like "22 OCT SULTAN" take last token
+    if len(name) > 15:
+        parts = name.split()
+        for p in reversed(parts):
+            if len(p) >= 2:
+                return p
     return name
 
 def detect_intent(text):
     if len(text) > 1500: return "ignore"
     if "def " in text and "return" in text: return "ignore"
-    t = text.lower()
-    if any(w in t for w in ["msah","delete","remove","cancel","shil","emsah"]): return "delete"
+    t = text.lower().strip()
+    if t in ["yes","y","ok","eh","na3am","yes yes","confirm","yes confirm","yep"]: return "yes_confirm"
+    if t in ["no","n","la","la2","cancel","msah","no no","no confirm"]: return "no_confirm"
+    if any(w in t for w in ["msah","delete","remove","shil","emsah"]): return "delete"
     if any(w in t for w in ["update","change","ghayir","badil"," to "," -> "]): return "update"
-    if any(w in t for w in ["kg","kilo","ghobbos","ajej","bra2","lo2os","frafir","sultan","samak","zedle"]): return "add"
+    if any(w in t for w in ["kg","kilo"]): return "add"
+    if any(f in t for f in FISH_LIST): return "add"
     return "general"
 
 async def download_whatsapp_media(media_id):
@@ -46,8 +65,7 @@ async def download_whatsapp_media(media_id):
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.get(f"https://graph.facebook.com/v19.0/{media_id}", headers={"Authorization": f"Bearer {env['WHATSAPP_TOKEN']}"})
-            data = r.json()
-            media_url = data.get("url")
+            data = r.json(); media_url = data.get("url")
             if not media_url: return None
             r2 = await c.get(media_url, headers={"Authorization": f"Bearer {env['WHATSAPP_TOKEN']}"})
             return r2.content
@@ -59,16 +77,14 @@ async def transcribe_voice(media_id):
     try:
         content = await download_whatsapp_media(media_id)
         if not content: return None
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
-            f.write(content); temp_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f: f.write(content); temp_path = f.name
         async with httpx.AsyncClient(timeout=40) as c:
             with open(temp_path, "rb") as af:
                 r = await c.post("https://api.openai.com/v1/audio/transcriptions",
                     headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"},
                     files={"file": (temp_path, af, "audio/ogg")}, data={"model": "whisper-1", "language": "ar"})
                 return r.json().get("text","")
-    except Exception as e:
-        print(f"Voice error: {e}"); return None
+    except: return None
 
 async def read_image_text(media_id, caption=""):
     env = get_env()
@@ -81,7 +97,7 @@ async def read_image_text(media_id, caption=""):
             r = await c.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"},
                 json={"model": "gpt-4o-mini","messages": [{"role": "user","content": [
-                    {"type": "text","text": "Extract fish list. Return like: Zedle 22 oct nohra broumana sultan 5 kilo 10$ Ajej 20kilo 7$. Caption: "+caption},
+                    {"type": "text","text": "Extract fish list. Return like: Zedle 22 oct adma Nohra: sultan 5kilo 3$ Ajej 30 kilo 7$ Bernard: bra2 20kilo Filet 10 kilo. Caption: "+caption},
                     {"type": "image_url","image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]})
             return r.json()["choices"][0]["message"]["content"]
     except: return caption
@@ -102,9 +118,65 @@ async def get_sheet_client():
     ws = sheet.worksheet(target)
     return ws, target
 
-async def smart_sheet_action(text):
-    intent = detect_intent(text)
-    if intent=="ignore": return None
+def parse_fish_message(text):
+    """Parse but NOT write - returns list of dicts [{fish, kg, price, supplier, where, date_str, week}]"""
+    lines = text.strip().split("\n")
+    current_supplier = "Nohra"
+    date_str = "22 Oct"
+    where = "Adma"
+    week = "20 - 25 Oct"
+    first_lower = lines[0].lower() if lines else ""
+    dm = re.search(r"(\d+)\s*(?:nov|oct)", first_lower)
+    if dm: date_str = dm.group(1).zfill(2) + " Oct"
+    if "broumana" in first_lower: where="Broumana"
+    if "antelias" in first_lower: where="Antelias"
+    if "adma" in first_lower: where="Adma"
+    if "baabda" in first_lower: where="Baabda"
+    if "bernard" in first_lower: current_supplier="Bernard"
+
+    parsed = []
+    for line in lines:
+        orig = line.strip()
+        if not orig: continue
+        # Update supplier if line says "Nohra:" or "Bernard:"
+        if ":" in orig:
+            head = orig.split(":",0)[0].lower() if ":" in orig else ""
+            # Actually check head
+            parts = orig.split(":",1)
+            head = parts[0].lower()
+            if "bernard" in head: current_supplier="Bernard"
+            if "nohra" in head: current_supplier="Nohra"
+            # If after colon there is fish, use that part
+            if len(parts)>1 and ("kilo" in parts[1].lower() or any(f in parts[1].lower() for f in FISH_LIST)):
+                orig = parts[1].strip()
+            else:
+                # If line is just "Bernard:" then continue to next line but keep supplier
+                if len(parts)>1 and parts[1].strip()=="":
+                    continue
+                # If no kilo after colon, skip this line header
+                if "kilo" not in orig.lower() and not any(f in orig.lower() for f in FISH_LIST):
+                    # Keep supplier for next lines
+                    continue
+
+        low = orig.lower()
+        km = re.search(r"(\d+(?:\.\d+)?)\s*k", low)
+        if not km: continue
+        kg = km.group(1)
+        idx = low.find(km.group(0).lower())
+        fish_raw = orig[:idx]
+        if ":" in fish_raw: fish_raw = fish_raw.split(":")[-1]
+        fish_clean = extract_fish_name(fish_raw)
+        if not fish_clean: continue
+        price=""
+        pm = re.search(r"(\d+(?:\.\d+)?)\$", orig)
+        if pm: price = "$"+pm.group(1)
+        parsed.append({"fish": fish_clean, "kg": kg, "price": price, "supplier": current_supplier, "where": where, "date_str": date_str, "week": week})
+    return parsed
+
+async def write_pending_to_sheet(phone):
+    if phone not in PENDING or not PENDING[phone]:
+        return "❌ Ma fi shi pending"
+    pending_list = PENDING[phone]
     try:
         ws, target = await get_sheet_client()
         all_values = ws.get_all_values()
@@ -121,9 +193,48 @@ async def smart_sheet_action(text):
             if not formula or "=" not in str(formula): return ""
             return str(formula).replace(str(last_data_row), str(new_row))
 
+        added=0; summary=[]
+        for item in pending_list:
+            new_row_num = last_data_row+added+1
+            row=[""]*13
+            row[0]=item["week"]; row[1]=item["date_str"]; row[2]=item["where"]
+            row[3]=smart_copy(last_formulas[3], new_row_num) if len(last_formulas)>3 else ""
+            row[4]=smart_copy(last_formulas[4], new_row_num) if len(last_formulas)>4 else ""
+            row[5]=item["supplier"]; row[6]=item["fish"]; row[7]=item["price"]; row[9]=item["kg"]
+            if len(last_formulas)>10: row[10]=smart_copy(last_formulas[10], new_row_num)
+            if len(last_formulas)>11: row[11]=smart_copy(last_formulas[11], new_row_num)
+            if len(last_formulas)>12: row[12]=smart_copy(last_formulas[12], new_row_num)
+            ws.update(f"A{new_row_num}:M{new_row_num}", [row], value_input_option="USER_ENTERED")
+            added+=1; summary.append(f"{item['fish']} {item['kg']}kg {item['supplier']}")
+        del PENDING[phone]
+        return f"Zedle {added} samak! {' + '.join(summary)} - {pending_list[0]['where']} {pending_list[0]['date_str']}"
+    except Exception as e:
+        traceback.print_exc(); return f"Error writing: {e}"
+
+async def smart_sheet_action(text, phone):
+    intent = detect_intent(text)
+    if intent=="ignore": return None
+
+    # YES / NO confirmation
+    if intent=="yes_confirm":
+        if phone in PENDING:
+            return await write_pending_to_sheet(phone)
+        else:
+            return "Ma fi shi pending to confirm"
+    if intent=="no_confirm":
+        if phone in PENDING:
+            del PENDING[phone]
+            return "❌ Ok ma zedet - eb3at list jdide"
+        else:
+            return "Ok"
+
+    try:
+        ws, target = await get_sheet_client()
+        all_values = ws.get_all_values()
+
         # DELETE
         if intent=="delete":
-            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|bezri|filet|loz|jarbide|masta|ghazel|dakar|sarbout)", text.lower())
+            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet|bezri|loz|jarbide|masta|ghazel|dakar|sarbout)", text.lower())
             if fm:
                 ft = fm.group(1).upper()
                 for i in range(len(all_values)-1,0,-1):
@@ -133,84 +244,52 @@ async def smart_sheet_action(text):
                 return f"❌ Ma la2et {ft}"
             return "❌ Eb3at: msah sultan"
 
-        # UPDATE - FIXED to find last matching fish
+        # UPDATE - now updates supplier too!
         if intent=="update":
-            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|bezri|filet|loz|jarbide|masta|ghazel|dakar|sarbout)", text.lower())
+            # Example: Update bra2 and filet for bernard not nohra
+            fm_all = re.findall(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet|bezri|loz|jarbide|masta|ghazel|dakar|sarbout)", text.lower())
+            new_supplier = "Bernard" if "bernard" in text.lower() else "Nohra" if "nohra" in text.lower() else None
             kilos = re.findall(r"(\d+(?:\.\d+)?)\s*k", text.lower())
-            if fm and kilos:
-                ft = fm.group(1).upper()
-                new_kg = kilos[-1]
-                for i in range(len(all_values)-1,0,-1):
-                    row = all_values[i]
-                    if len(row)>6 and ft in row[6].upper():
-                        # Qtty column J = 10th column = index 9 but J is 10th letter
-                        ws.update(f"J{i+1}", [[new_kg]], value_input_option="USER_ENTERED")
-                        return f"✅ Updated {ft} to {new_kg}kg row {i+1}!"
-                return f"❌ Ma la2et {ft}"
-            return "❌ Eb3at: update sultan 5 kilo to 10 kilo"
+            if fm_all:
+                updated=[]
+                for fish in fm_all:
+                    ft = fish.upper()
+                    for i in range(len(all_values)-1,0,-1):
+                        row = all_values[i]
+                        if len(row)>6 and ft in row[6].upper():
+                            if new_supplier:
+                                ws.update(f"F{i+1}", [[new_supplier]], value_input_option="USER_ENTERED")
+                            if kilos:
+                                ws.update(f"J{i+1}", [[kilos[-1]]], value_input_option="USER_ENTERED")
+                            updated.append(ft)
+                            break
+                if updated:
+                    return f"✅ Updated {', '.join(updated)} to {new_supplier if new_supplier else ''} {kilos[-1]+'kg' if kilos else ''}"
+                return f"❌ Ma la2et {', '.join(fm_all)}"
+            return "❌ Eb3at: update bra2 for bernard"
 
-        # ADD - FIXED PARSER
-        lines = text.strip().split("\n")
-        current_supplier = "Nohra"; date_str="21 Oct"; where="Broumana"; week="20 - 25 Oct"
-        first_lower = lines[0].lower() if lines else ""
-        dm = re.search(r"(\d+)\s*(?:nov|oct)", first_lower)
-        if dm: date_str = dm.group(1).zfill(2) + " Oct"
-        if "broumana" in first_lower: where="Broumana"
-        if "antelias" in first_lower: where="Antelias"
-        if "adma" in first_lower: where="Adma"
-        if "baabda" in first_lower: where="Baabda"
-        if "bernard" in first_lower: current_supplier="Bernard"
-        if "nohra" in first_lower: current_supplier="Nohra"
+        # ADD with confirmation
+        if intent=="add":
+            parsed = parse_fish_message(text)
+            if not parsed:
+                return None
+            # Save pending
+            PENDING[phone] = parsed
+            # Build confirm message
+            lines = []
+            for p in parsed:
+                lines.append(f"{p['fish']} {p['kg']}kg {p['price']} {p['supplier']}")
+            summary = "\n".join(lines)
+            return f"Rah zid hek:\n{summary}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date_str']}\n\nConfirm? Eb3at YES aw NO"
 
-        added=0; summary=[]
-        for line in lines:
-            orig = line.strip()
-            if not orig: continue
-            if len(orig)>300: continue
-            low = orig.lower()
-            if ":" in orig and "kilo" not in low[:40]:
-                parts = orig.split(":",1)
-                head = parts[0].lower()
-                if "bernard" in head: current_supplier="Bernard"
-                if "nohra" in head: current_supplier="Nohra"
-                if "broumana" in head: where="Broumana"
-                if "antelias" in head: where="Antelias"
-                if "adma" in head: where="Adma"
-                if "baabda" in head: where="Baabda"
-                if len(parts)>1 and "kilo" in parts[1].lower():
-                    orig = parts[1].strip(); low=orig.lower()
-                else: continue
-            km = re.search(r"(\d+(?:\.\d+)?)\s*k", low)
-            if not km: continue
-            kg = km.group(1)
-            idx = low.find(km.group(0).lower())
-            fish_raw = orig[:idx]
-            if ":" in fish_raw: fish_raw = fish_raw.split(":")[-1]
-            fish_clean = clean_fish_name(fish_raw)
-            if not fish_clean: continue
-            if len(fish_clean)>20: fish_clean = fish_clean.split()[-1]  # Take last word if still long like "22 OCT SULTAN" -> SULTAN
-            price=""
-            pm = re.search(r"(\d+(?:\.\d+)?)\$", orig)
-            if pm: price = "$"+pm.group(1)
-            new_row_num = last_data_row+added+1
-            row=[""]*13
-            row[0]=week; row[1]=date_str; row[2]=where
-            row[3]=smart_copy(last_formulas[3], new_row_num) if len(last_formulas)>3 else ""
-            row[4]=smart_copy(last_formulas[4], new_row_num) if len(last_formulas)>4 else ""
-            row[5]=current_supplier; row[6]=fish_clean; row[7]=price; row[9]=kg
-            if len(last_formulas)>10: row[10]=smart_copy(last_formulas[10], new_row_num)
-            if len(last_formulas)>11: row[11]=smart_copy(last_formulas[11], new_row_num)
-            if len(last_formulas)>12: row[12]=smart_copy(last_formulas[12], new_row_num)
-            ws.update(f"A{new_row_num}:M{new_row_num}", [row], value_input_option="USER_ENTERED")
-            added+=1; summary.append(fish_clean+" "+kg+"kg")
-        if added==0: return None
-        return "Zedle "+str(added)+" samak! "+" + ".join(summary)+" - "+where+" "+current_supplier+" "+date_str
     except Exception as e:
-        traceback.print_exc(); return "Error: "+str(e)[:400]
+        traceback.print_exc(); return f"Error: {e}"
+
+    return None
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra SMART - Fixed parser 22 oct = DATE not fish</h2>")
+async def root(): return HTMLResponse("<h2>Nohra SMART - Keep BRA2 exact + YES/NO confirm</h2>")
 @app.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
     mode = request.query_params.get("hub.mode"); token = request.query_params.get("hub.verify_token"); challenge = request.query_params.get("hub.challenge")
@@ -225,7 +304,7 @@ async def receive_message(request: Request):
         if "messages" not in val: return {"ok": True}
         msg = val["messages"][0]; from_num=msg["from"]; msg_type=msg.get("type","text"); text=""
         if msg_type=="text": text=msg["text"]["body"]
-        elif msg_type in ["audio","voice"]: 
+        elif msg_type in ["audio","voice"]:
             media_id = msg[msg_type]["id"]
             transcribed = await transcribe_voice(media_id)
             text = transcribed if transcribed else ""
@@ -235,7 +314,7 @@ async def receive_message(request: Request):
         else: text=msg.get("text",{}).get("body","Hello")
         if not text: return {"ok": True}
         print(f"Processing ({msg_type}): {text[:300]}")
-        reply = await smart_sheet_action(text)
+        reply = await smart_sheet_action(text, from_num)
         if not reply:
             env=get_env()
             if env["OPENAI_KEY"] and detect_intent(text)=="general":
