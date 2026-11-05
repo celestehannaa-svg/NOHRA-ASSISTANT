@@ -50,21 +50,14 @@ def detect_intent(text):
     t = text.lower().strip()
     if t in ["yes","y","ok","eh","na3am","YES","Yes","Y"]: return "yes_confirm"
     if t in ["no","n","la","la2","NO","No","N"]: return "no_confirm"
-    
-    # ADD = zedle
     if "zedle" in t: return "add"
-    
-    # REMOVE = L8i / shelle / shil / remove = SAME COMMAND
     remove_words = ["l8i", "shelle", "shil", "remove"]
     first = t.split()[0] if t.split() else ""
     if first in remove_words or any(t.startswith(w) for w in remove_words):
         return "delete"
-    
-    # UPDATE = ghayer / ghayerle / update = SAME COMMAND
     update_words = ["ghayerle", "ghayer", "update"]
     if first in update_words or any(t.startswith(w) for w in update_words):
         return "update"
-    
     if re.search(r"\d+(?:\.\d+)?\s*k", t): return "add"
     return "general"
 
@@ -192,7 +185,6 @@ async def write_pending(phone):
                         exist_g = forms[i][3] if len(forms[i])>3 else row[3]
                     if len(row)>4 and row[4].strip() and not exist_p:
                         exist_p = forms[i][4] if len(forms[i])>4 else row[4]
-                    break
         last=1
         for i in range(len(vals)-1,-1,-1):
             r=vals[i]
@@ -204,10 +196,27 @@ async def write_pending(phone):
         def sc(f,nr):
             if not f or "=" not in str(f): return ""
             return str(f).replace(str(last), str(nr))
+        default_g = sc(last_f[3], 9999) if len(last_f)>3 else ""
+        default_p = sc(last_f[4], 9999) if len(last_f)>4 else ""
+        # === NEW: ADD BLANK ROW BETWEEN DAYS ===
+        if not date_where_exists and vals:
+            # Find last non-empty row
+            last_row = vals[-1] if vals else []
+            last_date = last_row[1].strip() if len(last_row)>1 else ""
+            last_where = last_row[2].strip().lower() if len(last_row)>2 else ""
+            # If last row has data and different date/where, add blank row
+            if last_date and last_where and (last_date != plist[0]["date"] or last_where != plist[0]["where"].lower()):
+                # Check if last row is already blank (avoid double blank)
+                is_blank = all(not c.strip() for c in last_row[:13])
+                if not is_blank:
+                    ws.append_row([""]*13, value_input_option="USER_ENTERED")
+                    # Update last for formula copy
+                    last += 1
         added=0; upd=0; summ=[]
+        group_has_ghassan = exist_g is not None and str(exist_g).strip()!=""
         for idx,it in enumerate(plist):
             fidx=-1
-            for i,row in enumerate(vals):
+            for i,row in enumerate(ws.get_all_values()):
                 if len(row)>6 and row[1].strip()==it["date"] and row[2].strip().lower()==it["where"].lower() and row[5].strip().lower()==it["supplier"].lower() and row[6].strip().upper()==it["fish"].upper():
                     fidx=i+1; break
             if fidx!=-1:
@@ -223,12 +232,24 @@ async def write_pending(phone):
                 nr = len(ws.get_all_values())+1
                 row=[""]*13
                 row[0]=it["week"]; row[1]=it["date"]; row[2]=it["where"]
-                if date_where_exists or idx>0: row[3]=""; row[4]=""
+                if date_where_exists:
+                    if group_has_ghassan:
+                        row[3]=""; row[4]=""
+                    else:
+                        if idx==0:
+                            row[3]=default_g.replace("9999", str(nr)) if default_g else sc(last_f[3], nr)
+                            row[4]=default_p.replace("9999", str(nr)) if default_p else sc(last_f[4], nr)
+                            group_has_ghassan=True
+                        else:
+                            row[3]=""; row[4]=""
                 else:
-                    if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
-                    else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else ""
-                    if exist_p: row[4]=exist_p.replace(str(last), str(nr)) if "=" in str(exist_p) else exist_p
-                    else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else ""
+                    if idx==0:
+                        if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
+                        else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else default_g.replace("9999", str(nr))
+                        if exist_p: row[4]=exist_p.replace(str(last), str(nr)) if "=" in str(exist_p) else exist_p
+                        else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else default_p.replace("9999", str(nr))
+                    else:
+                        row[3]=""; row[4]=""
                 row[5]=it["supplier"]; row[6]=it["fish"]
                 if it["ptype"]=="dollar": row[7]=it["price_d"]; row[8]=""
                 elif it["ptype"]=="lbp": row[8]=it["price_l"]; row[7]=f"=I{nr}/89"
@@ -273,8 +294,6 @@ async def handle(text, phone):
             if not parts: return "Eb3at: L8i sultan, shelle mwasta, shil aarmout, remove bezri"
             search_term = parts[0].upper()
             search_term_full = (parts[0]+" "+parts[1]).upper() if len(parts)>=2 else search_term
-            kilos = re.findall(r"(\d+(?:\.\d+)?)\s*k", t)
-            is_return = "return" in t
             for search_try in [search_term, search_term_full]:
                 for i in range(len(vals)-1,0,-1):
                     r=vals[i]
@@ -285,23 +304,8 @@ async def handle(text, phone):
                         if "adma" in t and len(r)>2 and "adma" not in r[2].lower(): continue
                         if "broumana" in t and len(r)>2 and "broumana" not in r[2].lower(): continue
                         if "antelias" in t and len(r)>2 and "antelias" not in r[2].lower(): continue
-                        if is_return and kilos:
-                            try:
-                                cur_q = float(r[9]) if len(r)>9 and r[9] else 0
-                                ret_q = float(kilos[0])
-                                new_q = cur_q - ret_q
-                                if new_q <= 0:
-                                    ws.delete_rows(i+1)
-                                    return f"✅ Deleted {search_try} row {i+1}!"
-                                else:
-                                    ws.update(f"J{i+1}", [[str(new_q)]], value_input_option="USER_ENTERED")
-                                    return f"✅ Updated {search_try} {new_q}kg row {i+1}!"
-                            except:
-                                ws.delete_rows(i+1)
-                                return f"✅ Deleted {search_try} row {i+1}!"
-                        else:
-                            ws.delete_rows(i+1)
-                            return f"✅ Deleted {search_try} row {i+1}!"
+                        ws.delete_rows(i+1)
+                        return f"✅ Deleted {search_try} row {i+1}!"
             return f"❌ Ma la2et {search_term}"
         if intent in ["add","update"]:
             parsed = parse_msg(text)
@@ -322,7 +326,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - ADD zedle | REMOVE L8i shelle shil remove | UPDATE ghayer ghayerle</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - Blank Row Between Days + GHASSAN FIXED + L8i shelle shil remove | ghayer ghayerle</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
