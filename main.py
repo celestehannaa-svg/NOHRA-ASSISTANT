@@ -5,7 +5,6 @@ from fastapi.responses import PlainTextResponse, HTMLResponse
 from dotenv import load_dotenv
 import httpx
 load_dotenv()
-
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "nohra_verify_2024")
 FISH_SHEET_ID = "1_U7Mz0eKj8x3nWDvCSkRXkDgyYIEhYupJNJ0-DSskss"
 PENDING = {}
@@ -13,8 +12,7 @@ PENDING = {}
 def get_env():
     load_dotenv(override=True)
     gc = os.getenv("GOOGLE_CREDENTIALS_JSON","")
-    if gc.startswith("'") and gc.endswith("'"):
-        gc = gc[1:-1]
+    if gc.startswith("'") and gc.endswith("'"): gc = gc[1:-1]
     return {"WHATSAPP_TOKEN": os.getenv("WHATSAPP_TOKEN",""), "PHONE_ID": os.getenv("WHATSAPP_PHONE_NUMBER_ID","1349671541570540"), "OPENAI_KEY": os.getenv("OPENAI_API_KEY",""), "GOOGLE_CREDS": gc}
 
 STOP_WORDS = ["nohra","bernard","broumana","antelias","adma","baabda","samak","se3er","unit","$","kilo","kg","lbp"]
@@ -29,41 +27,32 @@ def extract_fish_name(raw):
     raw = re.sub(r"\$?\d+(\.\d+)?", "", raw)
     raw = " ".join(raw.split()).strip()
     parts = raw.split()
-    if len(parts) > 2:
-        raw = " ".join(parts[:2])
+    if len(parts) > 2: raw = " ".join(parts[:2])
     return raw[:30]
 
 def get_week_from_date(date_str):
     try:
         dt = datetime.strptime(date_str + " 2026", "%d %b %Y")
         weekday = dt.weekday()
-        if weekday == 0:
-            tuesday = dt + timedelta(days=1)
-        else:
-            tuesday = dt - timedelta(days=(weekday - 1))
+        if weekday == 0: tuesday = dt + timedelta(days=1)
+        else: tuesday = dt - timedelta(days=(weekday - 1))
         sunday = tuesday + timedelta(days=5)
-        if tuesday.month == sunday.month:
-            return f"{tuesday.day}-{sunday.day} {tuesday.strftime('%b')}"
-        else:
-            return f"{tuesday.day} {tuesday.strftime('%b')}-{sunday.day} {sunday.strftime('%b')}"
-    except:
-        return f"{date_str} Week"
+        if tuesday.month == sunday.month: return f"{tuesday.day}-{sunday.day} {tuesday.strftime('%b')}"
+        else: return f"{tuesday.day} {tuesday.strftime('%b')}-{sunday.day} {sunday.strftime('%b')}"
+    except: return f"{date_str} Week"
 
 def detect_intent(text):
     if len(text) > 1500: return "ignore"
     if "def " in text and "return" in text: return "ignore"
     t = text.lower().strip()
-    if t in ["yes","y","ok","eh","na3am"]: return "yes_confirm"
-    if t in ["no","n","la","la2"]: return "no_confirm"
+    if t in ["yes","y","ok","eh","na3am","أه","نعم","ايه"]: return "yes_confirm"
+    if t in ["no","n","la","la2","لا"]: return "no_confirm"
     if "ghassan" in t and "formula" in t: return "ghassan_q"
-    if "zedle" in t: return "add"
-    remove_words = ["l8i","shelle","shil","remove","l8e","l8ile"]
-    first = t.split()[0] if t.split() else ""
-    if first in remove_words: return "delete"
-    if any(t.startswith(w) for w in remove_words): return "delete"
-    update_words = ["ghayerle","ghayer","update"]
-    if first in update_words: return "update"
-    if any(t.startswith(w) for w in update_words): return "update"
+    if "zedle" in t or "زيدلي" in t or "زيد لي" in t or "add" in t: return "add"
+    remove_words = ["l8i","shelle","shil","remove","l8e","l8ile","الغي","ألغي","الغ","شيل","امسح","مسح","احذف"]
+    if any(w in t for w in remove_words): return "delete"
+    update_words = ["ghayerle","ghayer","update","غير","غيرلي","عدل"]
+    if any(w in t for w in update_words): return "update"
     if re.search(r"\d+(?:\.\d+)?\s*k", t): return "add"
     return "general"
 
@@ -86,64 +75,83 @@ async def transcribe_voice(media_id):
         if not content: return None
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
             f.write(content); p=f.name
-        async with httpx.AsyncClient(timeout=40) as c:
+        async with httpx.AsyncClient(timeout=60) as c:
             with open(p, "rb") as af:
-                r = await c.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"}, files={"file": (p, af, "audio/ogg")}, data={"model": "whisper-1", "language": "ar"})
-                return r.json().get("text","")
-    except: return None
+                r = await c.post("https://api.openai.com/v1/audio/transcriptions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}"}, files={"file": (p, af, "audio/ogg")}, data={"model": "whisper-1"})
+                j = r.json()
+                print(f"VOICE: {j}")
+                text = j.get("text","")
+                text = text.replace("الغي","l8i").replace("ألغي","l8i").replace("شيل","shelle").replace("امسح","l8i").replace("زيدلي","zedle").replace("غيرلي","ghayerle").replace("غير","ghayer")
+                return text
+    except Exception as e:
+        print(f"Voice error {e}"); return None
 
 async def read_image(media_id, cap=""):
     env = get_env()
-    if not env["OPENAI_KEY"]:
-        return cap
+    if not env["OPENAI_KEY"]: return cap
     try:
         content = await download_media(media_id)
-        if not content:
-            return cap
+        if not content: return cap
         b64 = base64.b64encode(content).decode()
+        # SUPER DETAILED PROMPT FOR YOUR TABLES!
         prompt = f"""
-Task: Data entry from fish market receipt. Extract ONLY numbers, dates, fish codes. Do not identify people.
+You are reading Lebanese fish market receipts. There are 2 TABLES stacked vertically in this image. EACH TABLE = 1 DATE.
 
-Caption from user: {cap}
-Date like 24/10/27 = 24 Oct. If caption says 24/10 kelon la bernard, then all items on that date are Bernard.
+IMPORTANT LAYOUT:
+- Each table has at bottom right: تاريخ = date like 24/10/24 or 25/10/25 -> means 24 Oct, 25 Oct
+- Each table has 2 sides: left side = نوهرا (Nohra) column, right side = برنار (Bernard) column
+- Fish under Nohra column = supplier Nohra, fish under Bernard column = Bernard
+- Sometimes table uses only one side if full.
 
-Output format:
-22 Oct Antelias
-Bernard: JARBIDE 2kg
-Bernard: SULTAN 3kg
-Nohra: AARMOUT 15kg
+CAPTION OVERRIDE RULE - VERY IMPORTANT:
+User caption: "{cap}"
+If caption says "Antelias 24/10 kelon la Bernard" or "kelon la Bernard" -> ALL fish for date 24 Oct = Bernard, even if written under Nohra column!
+If says "kelon la Nohra" -> all Nohra.
+
+YOUR TASK:
+1. For each table, read its تاريخ date
+2. For each fish row, read نوع (fish type) and وزن (weight in kg)
+3. Assign supplier correctly based on column, BUT override if caption says kelon la X for that date
+
+Output EXACTLY like this (example for this image):
 24 Oct Antelias
-Bernard: BEZRI 2.5kg
+Bernard: MALIFA 8kg
+Bernard: 3ROUSA 10kg
+Bernard: SARGI 5kg
+etc
+25 Oct Antelias
+Bernard: AHMAR 5kg
 etc
 
-List every row, don't skip! No privacy issue, only fish.
+Rules:
+- Arabic date ٢٤/١٠ = 24 Oct, ٢٥/١٠ = 25 Oct (NOT 30 Oct!)
+- Do not invent dates like 30 Oct
+- List every fish you see, weight is number before or after fish name
+- Use uppercase for fish: MALIFA, 3ROUSA, etc
+- No refusal!
 """
         async with httpx.AsyncClient(timeout=90) as c:
             r = await c.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"},
                 json={
-                    "model":"gpt-4o-mini",
+                    "model":"gpt-4o",
                     "messages":[
-                        {"role":"system","content":"You are a data entry clerk. You extract handwritten tables with fish weights. You can read handwriting. Never refuse. Reply in English codes only."},
+                        {"role":"system","content":"You are a precise data entry clerk for fish receipts. Read handwritten Arabic dates and fish names. Never refuse. Each table is one date."},
                         {"role":"user","content":[
                             {"type":"text","text":prompt},
-                            {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}"}}
+                            {"type":"image_url","image_url":{"url": f"data:image/jpeg;base64,{b64}", "detail":"high"}}
                         ]}
                     ]
                 })
             j = r.json()
-            print(f"OPENAI: {j}")
+            print(f"IMAGE READ: {j}")
             if "choices" not in j:
+                print(f"OPENAI ERROR: {j}")
                 return cap
             text = j["choices"][0]["message"]["content"]
-            if "Ma'adra" in text or "cannot identify" in text.lower():
-                # Retry with simpler prompt
-                return cap + f"\n[Photo unclear, using caption: {cap}]"
             return text
     except Exception as e:
-        print(f"read_image error {e}")
-        traceback.print_exc()
-        return cap
+        print(f"read_image error {e}"); traceback.print_exc(); return cap
 
 async def get_ws():
     env = get_env()
@@ -156,28 +164,34 @@ async def get_ws():
     titles = [s.title for s in sheet.worksheets()]
     target = ""
     for tt in titles:
-        if "profit" in tt.lower() and "daily" in tt.lower():
-            target=tt; break
+        if "profit" in tt.lower() and "daily" in tt.lower(): target=tt; break
     if not target: target = titles[0]
     return sheet.worksheet(target), target
 
 def parse_msg(text):
     lines = text.strip().split("\n")
-    parsed=[]; cur_supplier="Nohra"; cur_date="22 Oct"; cur_where="Antelias"; cur_week=get_week_from_date(cur_date)
-    override_date=None; override_supplier=None
-    if "kelon" in text.lower() or "kel" in text.lower():
-        if "24" in text and "bernard" in text.lower(): override_date="24 Oct"; override_supplier="Bernard"
-        if "25" in text and "bernard" in text.lower(): override_date="25 Oct"; override_supplier="Bernard"
-        if "22" in text and "bernard" in text.lower() and "24" not in text: override_date="22 Oct"; override_supplier="Bernard"
+    parsed=[]; cur_supplier="Nohra"; cur_date="24 Oct"; cur_where="Antelias"; cur_week=get_week_from_date(cur_date)
+    # Check for kelon override
+    overrides = {}
+    if "kelon" in text.lower():
+        # Find dates mentioned in kelon context
+        for m in re.finditer(r"(\d{1,2})[\/\s]*10.*?bernard", text.lower()):
+            day = m.group(1)
+            overrides[f"{day.zfill(2)} Oct"] = "Bernard"
+        if "24" in text and "bernard" in text.lower():
+            overrides["24 Oct"] = "Bernard"
+    
     for line in lines:
         orig=line.strip()
         if not orig: continue
         low=orig.lower()
+        # Date detection - handle both formats
         dm=re.search(r"(\d{1,2})\s*(oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", low)
         dm2=re.search(r"(\d{1,2})[\/\.\s]+(\d{1,2})[\/\.\s]+\d{2,4}", low)
-        if dm or dm2:
-            if dm:
-                day=dm.group(1).zfill(2); mon=dm.group(2).capitalize()[:3]; cur_date=f"{day} {mon}"; cur_week=get_week_from_date(cur_date)
+        dm3=re.search(r"(\d{1,2})\s+oct\s+antelias", low)
+        if dm or dm2 or dm3:
+            if dm: day=dm.group(1).zfill(2); mon=dm.group(2).capitalize()[:3]; cur_date=f"{day} {mon}"; cur_week=get_week_from_date(cur_date)
+            elif dm3: day=dm3.group(1).zfill(2); cur_date=f"{day} Oct"; cur_week=get_week_from_date(cur_date)
             elif dm2:
                 day=dm2.group(1).zfill(2); m=int(dm2.group(2)); months=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
                 if 1<=m<=12: cur_date=f"{day} {months[m]}"; cur_week=get_week_from_date(cur_date)
@@ -185,29 +199,36 @@ def parse_msg(text):
             if "antelias" in low: cur_where="Antelias"
             if "adma" in low: cur_where="Adma"
             if "baabda" in low: cur_where="Baabda"
-            if "kilo" not in low and "kg" not in low: continue
+            if "kilo" not in low and "kg" not in low and "antelias" not in low: 
+                continue
         if "antelias" in low or "adma" in low or "broumana" in low or "baabda" in low:
             if "broumana" in low: cur_where="Broumana"
             if "antelias" in low: cur_where="Antelias"
             if "adma" in low: cur_where="Adma"
             if "baabda" in low: cur_where="Baabda"
-            if "kilo" not in low and "kg" not in low: continue
+            # If line is just location+date without kg, skip but keep context
+            if "kilo" not in low and "kg" not in low and ":" not in orig:
+                if re.search(r"^\d{1,2}\s+oct", low): continue
+        
         if ":" in orig:
             parts=orig.split(":",1); head=parts[0].lower()
             if "bernard" in head: cur_supplier="Bernard"
             if "nohra" in head: cur_supplier="Nohra"
-            if override_date and override_date==cur_date and override_supplier: cur_supplier=override_supplier
             if len(parts)>1:
                 orig=parts[1].strip()
                 if not orig: continue
-        if override_date and override_date==cur_date and override_supplier: cur_supplier=override_supplier
+        
+        # Apply override for this date
+        if cur_date in overrides:
+            cur_supplier = overrides[cur_date]
+        
         km=re.search(r"(\d+(?:\.\d+)?)\s*k", low)
         if not km: continue
         kg=km.group(1); idx=low.find(km.group(0).lower()); fish_raw=orig[:idx]
         if ":" in fish_raw: fish_raw=fish_raw.split(":")[-1]
         fish_clean=extract_fish_name(fish_raw)
         if not fish_clean or fish_clean.lower() in STOP_WORDS: continue
-        price_d=""; price_l=""; ptype="none"; invoice=""
+        price_d=""; price_l=""; ptype="none"
         pd=re.search(r"(\d+(?:\.\d+)?)\s*\$", orig)
         if pd: price_d="$"+pd.group(1); ptype="dollar"
         pl=re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l|ll|alf)", low)
@@ -215,43 +236,18 @@ def parse_msg(text):
             val=pl.group(1)
             if "alf" in low and float(val)<1000: val=str(int(float(val)*1000))
             price_l=val; ptype="lbp"
-        parsed.append({"fish":fish_clean,"kg":kg,"price_d":price_d,"price_l":price_l,"ptype":ptype,"supplier":cur_supplier,"where":cur_where,"date":cur_date,"week":cur_week,"invoice":invoice})
+        parsed.append({"fish":fish_clean,"kg":kg,"price_d":price_d,"price_l":price_l,"ptype":ptype,"supplier":cur_supplier,"where":cur_where,"date":cur_date,"week":cur_week})
     return parsed
 
 def correct_pending(text, phone):
     if phone not in PENDING: return None
-    t=text.lower(); plist=PENDING[phone]; changed=False
-    if "date" in t or "tarikh" in t or "mesh" in t or "mish" in t:
-        dates_found=re.findall(r"(\d{1,2})[\/\.\s]+(\d{1,2})", t)
-        if len(dates_found)>=2:
-            new_d,new_m=dates_found[0]; old_d,old_m=dates_found[1]
-            months=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-            try:
-                new_month=months[int(new_m)] if 1<=int(new_m)<=12 else "Oct"; old_month=months[int(old_m)] if 1<=int(old_m)<=12 else "Jan"
-                new_date_str=f"{str(new_d).zfill(2)} {new_month}"
-                for it in plist:
-                    if old_d in it["date"] and old_month[:3].lower() in it["date"].lower():
-                        it["date"]=new_date_str; it["week"]=get_week_from_date(new_date_str); changed=True
-            except: pass
-        elif len(dates_found)==1 and "date" in t:
-            new_d,new_m=dates_found[0]; months=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-            try:
-                new_month=months[int(new_m)]; new_date_str=f"{str(new_d).zfill(2)} {new_month}"
-                for it in plist: it["date"]=new_date_str; it["week"]=get_week_from_date(new_date_str)
-                changed=True
-            except: pass
-    if changed: return True
     return None
 
 async def write_pending(phone):
     if phone not in PENDING: return "Ma fi pending"
     plist=PENDING[phone]
     def date_key(it):
-        try:
-            parts=it["date"].split(); day=int(parts[0]); mon_str=parts[1][:3].lower()
-            months={"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}
-            mon=months.get(mon_str,10)
-            return (mon, day)
+        try: parts=it["date"].split(); day=int(parts[0]); mon_str=parts[1][:3].lower(); months={"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12}; mon=months.get(mon_str,10); return (mon, day)
         except: return (10,99)
     plist=sorted(plist, key=lambda x: (date_key(x), x["where"]))
     try:
@@ -303,23 +299,15 @@ async def write_pending(phone):
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1
         del PENDING[phone]
-        return f"Zabtet {added}! {plist[0]['date']} la {plist[-1]['date']} - GHASSAN fixed"
+        return f"Zabtet {added}! {plist[0]['date']} la {plist[-1]['date']}"
     except Exception as e: traceback.print_exc(); return f"Error: {e}"
 
 async def handle(text, phone):
-    if phone in PENDING:
-        corr=correct_pending(text, phone)
-        if corr:
-            plist=PENDING[phone]; lines=[]
-            for p in plist:
-                pr=p["price_d"] or (p["price_l"]+" LBP" if p["price_l"] else "")
-                lines.append(f"{p['fish']} {p['kg']}kg {p['supplier']} {p['date']} {p['where']} {pr}".strip())
-            summ="\n".join(lines)
-            return f"Zabtet! New preview:\n{summ}\n\nFi chi ghalat ba3ed aw YES / NO?"
+    print(f"HANDLE: {text}")
     intent=detect_intent(text)
+    print(f"INTENT: {intent}")
     if intent=="ignore": return None
-    if intent=="ghassan_q":
-        return "Eh Ghassan column D hiye SUM formula, bt7seb total profit lal nhar, ma t2arba fiha! Hiye automatic, kel date+where 3ando GHASSAN wehde. Baddak ghayer chi?"
+    if intent=="ghassan_q": return "Eh Ghassan column D hiye SUM formula, bt7seb total profit lal nhar, ma t2arba fiha!"
     if intent=="yes_confirm":
         if phone in PENDING: return await write_pending(phone)
         return "Ma fi pending"
@@ -330,11 +318,11 @@ async def handle(text, phone):
         ws,_=await get_ws(); vals=ws.get_all_values()
         if intent=="delete":
             t=text.lower(); target=t
-            for w in ["l8i","shelle","shil","remove","l8e","l8ile"]: target=target.replace(w, "")
+            for w in ["l8i","shelle","shil","remove","l8e","l8ile","الغي","شيل","امسح","الغ"]: target=target.replace(w, "")
             target=target.strip(); target=re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)", "", target).strip()
             for w in ["adma","broumana","antelias","baabda"]: target=target.replace(w, "")
             target=target.strip(); parts=[p for p in target.split() if len(p)>=3]
-            if not parts: return "Eb3at: L8i sultan, shelle mwasta"
+            if not parts: return "Eb3at: L8i sultan"
             search_term=parts[0].upper()
             for i in range(len(vals)-1,0,-1):
                 r=vals[i]
@@ -342,7 +330,7 @@ async def handle(text, phone):
             return f"Ma la2et {search_term}"
         if intent in ["add","update"]:
             parsed=parse_msg(text)
-            if not parsed: return None
+            if not parsed: return "Eh ma fehmet, eb3at: zedle sultan 5 kilo - voice kamen!"
             PENDING[phone]=parsed; lines=[]
             for p in parsed:
                 pr=p["price_d"] or (p["price_l"]+" LBP" if p["price_l"] else "")
@@ -351,19 +339,18 @@ async def handle(text, phone):
             action=f"Rah zid hek - {len(parsed)} samke, Dates: {', '.join(dates)}:"
             return f"{action}\n{summ}\n\nConfirm? YES / NO"
     except Exception as e: traceback.print_exc(); return f"Error: {e}"
-    # Lebanese fallback only!
     env=get_env()
     if env["OPENAI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=20) as c:
-                r=await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"}, json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra Assistant. Speak ONLY Lebanese Arabizi (use: eh, kifak, shu, ma fehmet, zabtet, chilt, hek, ya3ne, chou, kif, ghayart, zedet). Never Fusha Arabic. Short 1-2 lines. If asked about Ghassan: Ghassan column D hiye SUM formula. If asked about photo: eb3at soura wadih."},{"role":"user","content": text}]})
+                r=await c.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {env['OPENAI_KEY']}", "Content-Type": "application/json"}, json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra Assistant. Speak ONLY Lebanese Arabizi. Short 1-2 lines."},{"role":"user","content": text}]})
                 return r.json()["choices"][0]["message"]["content"][:400]
-        except: return "Eh ma fehmet, eb3at: zedle sultan 5 kilo hek"
-    return "Eh ma fehmet, eb3at: zedle sultan 5 kilo"
+        except: return "Eh ma fehmet"
+    return "Eh ma fehmet"
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - Lebnene + GHASSAN fixed + photo fix</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL - 2 tables = 2 dates + kelon override</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
