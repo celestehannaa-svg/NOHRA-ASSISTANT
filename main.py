@@ -185,6 +185,24 @@ async def write_pending(phone):
                         exist_g = forms[i][3] if len(forms[i])>3 else row[3]
                     if len(row)>4 and row[4].strip() and not exist_p:
                         exist_p = forms[i][4] if len(forms[i])>4 else row[4]
+        # === FIX: FIND LAST GHASSAN & PROFIT FORMULA (not last row) ===
+        last_g_formula=""; last_g_row=0
+        last_p_formula=""; last_p_row=0
+        for i in range(len(forms)-1, -1, -1):
+            if len(forms[i])>3 and forms[i][3].strip() and "SUM" in forms[i][3].upper():
+                if not last_g_formula:
+                    last_g_formula = forms[i][3]
+                    last_g_row = i+1
+            if len(forms[i])>4 and forms[i][4].strip() and "SUM" in forms[i][4].upper():
+                if not last_p_formula:
+                    last_p_formula = forms[i][4]
+                    last_p_row = i+1
+            if last_g_formula and last_p_formula: break
+        # Fallback if not found
+        if not last_g_formula:
+            last_g_formula = "=SUM(ARRAYFORMULA(FILTER($J$2:$J, $B$2:$B = B{ROW}, $C$2:$C = C{ROW}) * IF(LOWER(FILTER($G$2:$G, $B$2:$B = B{ROW}, $C$2:$C = C{ROW})) = \"bezri\", 0, 1))))"
+        if not last_p_formula:
+            last_p_formula = "=SUMIFS($M:$M, $C:$C, C{ROW}, $B:$B, B{ROW}, $A:$A, A{ROW})"
         last=1
         for i in range(len(vals)-1,-1,-1):
             r=vals[i]
@@ -196,27 +214,21 @@ async def write_pending(phone):
         def sc(f,nr):
             if not f or "=" not in str(f): return ""
             return str(f).replace(str(last), str(nr))
-        default_g = sc(last_f[3], 9999) if len(last_f)>3 else ""
-        default_p = sc(last_f[4], 9999) if len(last_f)>4 else ""
-        # === NEW: ADD BLANK ROW BETWEEN DAYS ===
-        if not date_where_exists and vals:
-            # Find last non-empty row
-            last_row = vals[-1] if vals else []
-            last_date = last_row[1].strip() if len(last_row)>1 else ""
-            last_where = last_row[2].strip().lower() if len(last_row)>2 else ""
-            # If last row has data and different date/where, add blank row
-            if last_date and last_where and (last_date != plist[0]["date"] or last_where != plist[0]["where"].lower()):
-                # Check if last row is already blank (avoid double blank)
-                is_blank = all(not c.strip() for c in last_row[:13])
-                if not is_blank:
+        # === FIX: BLANK ROW BETWEEN DIFFERENT DAYS ===
+        if not date_where_exists:
+            # Always add 1 blank row if last row has data (not blank)
+            if vals:
+                last_data_row = vals[-1]
+                # Check if last row is not blank
+                has_data = any(c.strip() for c in last_data_row[:7])
+                if has_data:
                     ws.append_row([""]*13, value_input_option="USER_ENTERED")
-                    # Update last for formula copy
-                    last += 1
         added=0; upd=0; summ=[]
         group_has_ghassan = exist_g is not None and str(exist_g).strip()!=""
         for idx,it in enumerate(plist):
             fidx=-1
-            for i,row in enumerate(ws.get_all_values()):
+            cur_vals = ws.get_all_values()
+            for i,row in enumerate(cur_vals):
                 if len(row)>6 and row[1].strip()==it["date"] and row[2].strip().lower()==it["where"].lower() and row[5].strip().lower()==it["supplier"].lower() and row[6].strip().upper()==it["fish"].upper():
                     fidx=i+1; break
             if fidx!=-1:
@@ -237,17 +249,28 @@ async def write_pending(phone):
                         row[3]=""; row[4]=""
                     else:
                         if idx==0:
-                            row[3]=default_g.replace("9999", str(nr)) if default_g else sc(last_f[3], nr)
-                            row[4]=default_p.replace("9999", str(nr)) if default_p else sc(last_f[4], nr)
+                            # FIX: Use last GHASSAN formula found, replace row number
+                            if last_g_formula:
+                                row[3]=last_g_formula.replace(str(last_g_row), str(nr)).replace("{ROW}", str(nr))
+                            else:
+                                row[3]=sc(last_f[3], nr)
+                            if last_p_formula:
+                                row[4]=last_p_formula.replace(str(last_p_row), str(nr)).replace("{ROW}", str(nr))
+                            else:
+                                row[4]=sc(last_f[4], nr)
                             group_has_ghassan=True
                         else:
                             row[3]=""; row[4]=""
                 else:
                     if idx==0:
-                        if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
-                        else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else default_g.replace("9999", str(nr))
-                        if exist_p: row[4]=exist_p.replace(str(last), str(nr)) if "=" in str(exist_p) else exist_p
-                        else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else default_p.replace("9999", str(nr))
+                        if last_g_formula:
+                            row[3]=last_g_formula.replace(str(last_g_row), str(nr)).replace("{ROW}", str(nr))
+                        else:
+                            row[3]=sc(last_f[3], nr)
+                        if last_p_formula:
+                            row[4]=last_p_formula.replace(str(last_p_row), str(nr)).replace("{ROW}", str(nr))
+                        else:
+                            row[4]=sc(last_f[4], nr)
                     else:
                         row[3]=""; row[4]=""
                 row[5]=it["supplier"]; row[6]=it["fish"]
@@ -264,7 +287,7 @@ async def write_pending(phone):
         del PENDING[phone]
         if upd>0 and added==0: return f"Updated {upd}! {' + '.join(summ)}"
         elif added>0 and upd>0: return f"Added {added} + Updated {upd}! {' + '.join(summ)}"
-        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']}"
+        else: return f"Zedle {added}! {' + '.join(summ)} - {plist[0]['where']} {plist[0]['date']} (blank row added)"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
 
@@ -326,7 +349,7 @@ async def handle(text, phone):
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL - Blank Row Between Days + GHASSAN FIXED + L8i shelle shil remove | ghayer ghayerle</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL FIX - GHASSAN & PROFIT FORMULA FIXED + Blank Row + L8i shelle shil remove</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
