@@ -16,7 +16,7 @@ def get_env():
     if gc.startswith("'") and gc.endswith("'"): gc = gc[1:-1]
     return {"WHATSAPP_TOKEN": os.getenv("WHATSAPP_TOKEN",""), "PHONE_ID": os.getenv("WHATSAPP_PHONE_NUMBER_ID","1349671541570540"), "OPENAI_KEY": os.getenv("OPENAI_API_KEY",""), "GOOGLE_CREDS": gc}
 
-FISH_LIST = ["ghobbos","ajej","bra2","lo2os","frafir","sultan","filet","bezri","loz","jarbide","masta","ghazel","dakar","sarbout","dakr","ghzazel","msasta"]
+FISH_LIST = ["ghobbos","ajej","bra2","lo2os","frafir","sultan","filet","bezri","loz","jarbide","masta","ghazel","dakar","sarbout","dakr","ghzazel","msasta","kalamari","serma","erna","mesaar","ghazal","sandou","aarmout"]
 
 def extract_fish_name(raw):
     raw_low = raw.lower()
@@ -24,12 +24,13 @@ def extract_fish_name(raw):
         if f in raw_low: return f.upper()
     name = raw.upper()
     name = re.sub(r"\d+\s*(?:OCT|NOV)", "", name)
-    for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP"]:
+    for bad in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L"]:
         name = name.replace(bad,"")
     name = re.sub(r"\$?\d+(\.\d+)?", "", name)
     return " ".join(name.split()).strip()[:20]
 
 def get_week_from_date(date_str):
+    """Tue - Sun: 28 Oct Tue -> 28 Oct - 2 Nov Sun"""
     try:
         dt = datetime.strptime(date_str + " 2025", "%d %b %Y")
         weekday = dt.weekday()
@@ -44,9 +45,10 @@ def get_week_from_date(date_str):
 
 def detect_intent(text):
     if len(text) > 1500: return "ignore"
+    if "def " in text and "return" in text: return "ignore"
     t = text.lower().strip()
-    if t in ["yes","y","ok","eh","na3am","YES","Yes","yes"]: return "yes_confirm"
-    if t in ["no","n","la","la2","NO","No","no"]: return "no_confirm"
+    if t in ["yes","y","ok","eh","na3am","YES","Yes","yes","Y"]: return "yes_confirm"
+    if t in ["no","n","la","la2","NO","No","no","N"]: return "no_confirm"
     if any(w in t for w in ["msah","delete","remove","shil"]): return "delete"
     if any(w in t for w in ["update","change","ghayir"]): return "update"
     if "kilo" in t or "kg" in t: return "add"
@@ -141,8 +143,8 @@ def parse_msg(text):
         price_d=""; price_l=""; ptype="none"
         pd = re.search(r"(\d+(?:\.\d+)?)\s*\$", orig)
         pd2 = re.search(r"\$\s*(\d+(?:\.\d+)?)", orig)
-        pl = re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l)", low)
-        pl2 = re.search(r"(?:lbp|l\.l)\s*(\d+(?:\.\d+)?)", low)
+        pl = re.search(r"(\d+(?:\.\d+)?)\s*(?:lbp|l\.l|LL)", low)
+        pl2 = re.search(r"(?:lbp|l\.l|LL)\s*(\d+(?:\.\d+)?)", low)
         if pd: price_d="$"+pd.group(1); ptype="dollar"
         elif pd2: price_d="$"+pd2.group(1); ptype="dollar"
         elif pl: price_l=pl.group(1); ptype="lbp"
@@ -167,12 +169,15 @@ async def write_pending(phone):
         ws, target = await get_ws()
         vals = ws.get_all_values()
         forms = ws.get(f"A1:M{len(vals)}", value_render_option="FORMULA")
-        exist_g=None; exist_p=None
+
+        exist_g=None; exist_p=None; date_where_exists=False
         for i,row in enumerate(vals):
             if len(row)>2 and row[1].strip()==plist[0]["date"] and row[2].strip().lower()==plist[0]["where"].lower():
+                date_where_exists=True
                 if len(row)>3 and row[3].strip(): exist_g = forms[i][3] if len(forms[i])>3 else row[3]
                 if len(row)>4 and row[4].strip(): exist_p = forms[i][4] if len(forms[i])>4 else row[4]
-                if exist_g: break
+                break
+
         last=1
         for i in range(len(vals)-1,-1,-1):
             r=vals[i]
@@ -181,9 +186,20 @@ async def write_pending(phone):
             last_f = ws.get(f"A{last}:M{last}", value_render_option="FORMULA")[0]
             while len(last_f)<13: last_f.append("")
         except: last_f=[""]*13
+
+        # Find template formula for $ column when LBP
+        template_fish_price = ""
+        for i,f in enumerate(forms):
+            if len(f)>7 and f[7] and "=" in str(f[7]):
+                if "I" in str(f[7]) or len(str(f[7]))>8:
+                    template_fish_price = f[7]; break
+        if not template_fish_price and len(last_f)>7 and last_f[7] and "=" in str(last_f[7]):
+            template_fish_price = last_f[7]
+
         def sc(f,nr):
             if not f or "=" not in str(f): return ""
             return str(f).replace(str(last), str(nr))
+
         added=0; upd=0; summ=[]
         for it in plist:
             fidx=-1
@@ -197,26 +213,36 @@ async def write_pending(phone):
                     ws.update(f"I{fidx}", [[""]], value_input_option="USER_ENTERED")
                 elif it["ptype"]=="lbp" and it["price_l"]:
                     ws.update(f"I{fidx}", [[it["price_l"]]], value_input_option="USER_ENTERED")
-                    if last_f[7] and "=" in str(last_f[7]): ws.update(f"H{fidx}", [[sc(last_f[7], fidx)]], value_input_option="USER_ENTERED")
+                    if template_fish_price:
+                        ws.update(f"H{fidx}", [[re.sub(r"\d+", str(fidx), str(template_fish_price))]], value_input_option="USER_ENTERED")
                 upd+=1; summ.append(f"Updated {it['fish']} {it['kg']}kg")
             else:
                 nr = len(ws.get_all_values())+1
                 row=[""]*13
                 row[0]=it["week"]; row[1]=it["date"]; row[2]=it["where"]
-                if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
-                else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else ""
-                if exist_p: row[4]=exist_p.replace(str(last), str(nr)) if "=" in str(exist_p) else exist_p
-                else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else ""
+                if date_where_exists:
+                    row[3]=""; row[4]=""
+                else:
+                    if exist_g: row[3]=exist_g.replace(str(last), str(nr)) if "=" in str(exist_g) else exist_g
+                    else: row[3]=sc(last_f[3], nr) if len(last_f)>3 else ""
+                    if exist_p: row[4]=exist_p.replace(str(last), str(nr)) if "=" in str(exist_p) else exist_p
+                    else: row[4]=sc(last_f[4], nr) if len(last_f)>4 else ""
                 row[5]=it["supplier"]; row[6]=it["fish"]
                 if it["ptype"]=="dollar": row[7]=it["price_d"]; row[8]=""
-                elif it["ptype"]=="lbp": row[7]=sc(last_f[7], nr) if len(last_f)>7 and last_f[7] and "=" in str(last_f[7]) else ""; row[8]=it["price_l"]
-                else: row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""; row[8]=""
+                elif it["ptype"]=="lbp":
+                    row[7]=re.sub(r"\d+", str(nr), str(template_fish_price)) if template_fish_price else (sc(last_f[7], nr) if len(last_f)>7 and last_f[7] and "=" in str(last_f[7]) else "")
+                    row[8]=it["price_l"]
+                else:
+                    row[7]=sc(last_f[7], nr) if len(last_f)>7 else ""
+                    row[8]=""
                 row[9]=it["kg"]
                 if len(last_f)>10: row[10]=sc(last_f[10], nr)
                 if len(last_f)>11: row[11]=sc(last_f[11], nr)
                 if len(last_f)>12: row[12]=sc(last_f[12], nr)
                 ws.update(f"A{nr}:M{nr}", [row], value_input_option="USER_ENTERED")
                 added+=1; summ.append(f"{it['fish']} {it['kg']}kg {it['supplier']}")
+                date_where_exists=True
+
         del PENDING[phone]
         if upd>0 and added==0: return f"Updated {upd} (no duplicate)! {' + '.join(summ)}"
         elif added>0 and upd>0: return f"Added {added} + Updated {upd}! {' + '.join(summ)}"
@@ -237,7 +263,7 @@ async def handle(text, phone):
         ws,_ = await get_ws()
         vals = ws.get_all_values()
         if intent=="delete":
-            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet)", text.lower())
+            fm = re.search(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet|bezri|loz|jarbide|masta)", text.lower())
             if fm:
                 ft=fm.group(1).upper()
                 for i in range(len(vals)-1,0,-1):
@@ -246,7 +272,7 @@ async def handle(text, phone):
                 return f"❌ Ma la2et {ft}"
             return "Eb3at: msah sultan"
         if intent=="update":
-            fms = re.findall(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet)", text.lower())
+            fms = re.findall(r"(ghobbos|ajej|bra2|lo2os|frafir|sultan|filet|bezri|loz|jarbide|masta)", text.lower())
             ns = "Bernard" if "bernard" in text.lower() else "Nohra" if "nohra" in text.lower() else None
             ks = re.findall(r"(\d+(?:\.\d+)?)\s*k", text.lower())
             if fms:
@@ -278,14 +304,14 @@ async def handle(text, phone):
                     if len(r)>6 and r[1].strip()==p["date"] and r[2].strip().lower()==p["where"].lower() and r[5].strip().lower()==p["supplier"].lower() and r[6].strip().upper()==p["fish"].upper():
                         dups.append(p["fish"]); break
             dm = f"\n⚠️ {', '.join(dups)} exists - will UPDATE!" if dups else ""
-            return f"Rah zid hek:\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}{dm}\n\nConfirm? YES / NO"
+            return f"Rah zid hek:\n{summ}\nWhere: {parsed[0]['where']} Date: {parsed[0]['date']} Week: {parsed[0]['week']}{dm}\n\nGHASSAN one per day/branch only!\n\nConfirm? YES / NO"
     except Exception as e:
         traceback.print_exc(); return f"Error: {e}"
     return None
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra FINAL FIXED - Tue-Sun 28 Oct -2 Nov - No space route</h2>")
+async def root(): return HTMLResponse("<h2>Nohra FINAL ALL - Tue-Sun 28 Oct -2 Nov + One GHASSAN + $ formula LBP + BRA2 + YES/NO</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
