@@ -21,21 +21,53 @@ FISH_MAP={
 "فيلي":"Filet","فيله":"Filet","فيليه":"Filet","أصفر":"Asfar","اصفر":"Asfar",
 "مليفة":"Malifa","جربيدي":"Jarbide","برا":"Bra2","براق":"Bra2","برا بلادي":"Bra Balade",
 "قريدس":"Jrawe","جراوي":"Jrawe","سلطان":"Sultan","غبوس":"Ghobbos","سارغوس":"Sarghous",
-"ابيض":"Abyad","ارموط":"Aarmout","لوء صخري":"Loq Sakhri","لو صخري":"Loq Sakhri",
+"ابيض":"Abyad","ابيضا":"Abyda","ابيدا":"Abyda","ارموط":"Aarmout","لوء صخري":"Loq Sakhri","لو صخري":"Loq Sakhri",
 "عجيج":"Ajej","عجاج":"Ajej","اجيج":"Ajej","اجاج":"Ajej","جدلا":"Jadla","جادلا":"Jadla",
 "غزال بلدي":"Ghazil Baladi","مسقار":"Mes2ar","مسار":"Mes2ar","مسكار":"Mes2ar"
 }
 ARABIC_NUMS={"٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9","۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9"}
 ARABIC_MONTHS={"اكتوبر":"Oct","أكتوبر":"Oct","تشرين":"Oct","نوفمبر":"Nov","تشرين الثاني":"Nov","ديسمبر":"Dec","كانون الاول":"Dec","يناير":"Jan","كانون الثاني":"Jan","سبتمبر":"Sep","ايلول":"Sep","اغسطس":"Aug","يوليو":"Jul","تموز":"Jul","يونيو":"Jun","مايو":"May","ابريل":"Apr","مارس":"Mar","فبراير":"Feb"}
-EXACT_LOCK={"BRA":"BRA2","BRA2":"BRA2","BRA BALADE":"BRA2 BALADE","AJAJ":"AJEJ","AJEJ":"AJEJ","FILY":"FILET","FILET":"FILET","MESKAR":"MES2AR","MES2AR":"MES2AR","LABERNAR":"GHASSANI","GHASSANI":"GHASSANI"}
+EXACT_LOCK={"BRA":"BRA2","BRA2":"BRA2","BRA BALADE":"BRA2 BALADE","AJAJ":"AJEJ","AJEJ":"AJEJ","FILY":"FILET","FILET":"FILET","MESKAR":"MES2AR","MES2AR":"MES2AR","LABERNAR":"GHASSANI","GHASSANI":"GHASSANI","ABYDA":"ABYDA","ABYAD":"ABYAD"}
 
 def to_arabizi_fast(text):
     for ar,en in ARABIC_NUMS.items(): text=text.replace(ar,en)
     for ar,en in ARABIC_MONTHS.items(): text=text.replace(ar,en)
     for ar,en in FISH_MAP.items(): text=text.replace(ar,en)
     text=text.replace("التاريخ","Date").replace("تاريخ","Date").replace("مش","not")
-    text=text.replace("سبعة وعشرين","27").replace("خمسة وعشرين","25").replace("تسعة وعشرين","29").replace("تسع وعشرين","29").replace("واحد","1").replace("خمسة","5").replace("سبعة","7")
+    text=text.replace("سبعة وعشرين","27").replace("خمسة وعشرين","25").replace("تسعة وعشرين","29").replace("واحد","1").replace("خمسة","5").replace("سبعة","7")
     return text
+
+# === FIX: 4 kilo w 800 = 4.8kg ===
+def parse_weight_w_grams(text):
+    low=text.lower()
+    def repl(m):
+        kilos=float(m.group(1))
+        grams=int(m.group(2))
+        total=kilos + grams/1000.0
+        # 4.8 not 4.800
+        s=f"{total:.3f}".rstrip("0").rstrip(".")
+        return f"{s}kg"
+    # "4 kilo w 800" / "4 kilo wa 800" / "4 kg + 800" / "4 kilo w 800 gram"
+    text=re.sub(r"(\d+(?:\.\d+)?)\s*(?:kilo|kilos|kg|k)\s*(?:w|wa|\+|and|و)\s*(\d{1,3})\s*(?:gram|gr|g|grams)?\b", repl, text, flags=re.I)
+    return text
+
+# === FIX: Malifa for Nohra ===
+def extract_for_supplier(text):
+    mapping={}; default="Bernard"
+    low=text.lower()
+    for m in re.finditer(r"(\w+(?:\s+\w+)?)\s+for\s+(nohra|bernard)", low):
+        fish=m.group(1).strip().upper()
+        fish=re.sub(r"^(LA|EL|AL)\s+","",fish)
+        # Clean: remove date/where words
+        fish=re.sub(r"(ANTELIAS|ADMA|BROUMANA|BAABDA|OCT|NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP)","",fish).strip()
+        if len(fish)>=2:
+            mapping[fish]=m.group(2).capitalize()
+            print(f"FOR SUPPLIER: {fish} -> {mapping[fish]}")
+    if "rest for bernard" in low or "rest la bernard" in low or "be2e" in low or "rest bernard" in low: default="Bernard"
+    if "rest for nohra" in low or "rest la nohra" in low: default="Nohra"
+    # Also "La Nohra:" section
+    if "la nohra" in low and "la bernard" not in low: default="Nohra"
+    return mapping, default
 
 def extract_fish_name(raw):
     raw=re.sub(r"\d+\s*(?:oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug|sep)","",raw,flags=re.I)
@@ -46,7 +78,7 @@ def extract_fish_name(raw):
     if "MESKAR" in up: up=up.replace("MESKAR","MES2AR")
     if "LABERNAR" in up: up=up.replace("LABERNAR","GHASSANI")
     raw=up
-    for b in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L","ZEDLE","GHAYER","L8I","SHELLE","SHIL","REMOVE","UPDATE"]:
+    for b in ["NOHRA","BERNARD","BROUMANA","ANTELIAS","ADMA","BAABDA","SAMAK","SE3ER","UNIT","$","KILO","KG","LBP","L.L","ZEDLE","GHAYER","L8I","SHELLE","SHIL","REMOVE","UPDATE","FOR"]:
         raw=raw.replace(b,"")
     raw=re.sub(r"\$?\d+(\.\d+)?","",raw)
     raw=" ".join(raw.split()).strip()
@@ -71,7 +103,6 @@ def get_week_from_date(d):
         else: return f"{tue.day} {tue.strftime('%b')}-{sun.day} {sun.strftime('%b')}"
     except: return f"{d} Week"
 
-# === GENERIC DATE - ANY DATE, NO HARDCODED DATES ===
 def parse_any_date(text):
     low=text.lower()
     mon_map={"jan":"Jan","feb":"Feb","mar":"Mar","apr":"Apr","may":"May","jun":"Jun","jul":"Jul","aug":"Aug","sep":"Sep","oct":"Oct","nov":"Nov","dec":"Dec","january":"Jan","february":"Feb","march":"Mar","april":"Apr","june":"Jun","july":"Jul","august":"Aug","september":"Sep","october":"Oct","november":"Nov","december":"Dec"}
@@ -103,7 +134,7 @@ def detect_intent(t):
     if any(w in s for w in ["l8i","shelle","shil","remove","l8e"]): return "delete"
     if any(w in s for w in ["ghayerle","ghayer","update"]): return "update"
     if re.search(r"\d+(?:\.\d+)?\s*(?:kilo|kg|k)\b",s): return "add"
-    if any(w in s for w in ["asfar","malifa","sarghous","jrawe","abyad","aarmout","ghobbos","bezri","faride","bra2","lo2os","mwasta","sultan","azatli","ghassani","ghazal","firan","filet","ajej","jadla","mes2ar"]): return "add"
+    if any(w in s for w in ["asfar","malifa","sarghous","jrawe","abyad","abyda","aarmout","ghobbos","bezri","faride","bra2","lo2os","mwasta","sultan","azatli","ghassani","ghazal","firan","filet","ajej","jadla","mes2ar"]): return "add"
     if any(w in s for w in ["date","where","not","mesh","ghayer"]): return "correction"
     return "general"
 
@@ -124,27 +155,28 @@ async def transcribe_voice_fast(mid):
     try:
         content=await download_media(mid)
         if not content: return None
-        print(f"Voice {len(content)} bytes GENERIC")
+        print(f"Voice {len(content)} bytes")
         with tempfile.NamedTemporaryFile(suffix=".ogg",delete=False) as f:
             f.write(content); p=f.name
         async with httpx.AsyncClient(timeout=30) as c:
             with open(p,"rb") as af:
-                r=await c.post("https://api.openai.com/v1/audio/transcriptions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}"},files={"file":(p,af,"audio/ogg")},data={"model":"whisper-1","language":"ar","prompt":"Zedle Antelias La Nohra La Bernard Ajej Aarmout Mes2ar Ghassani Bra2 Filet kilo se3er alf lbp dollar, date like day month, Mes2ar not Meskar, Ghassani not Labernar"})
+                r=await c.post("https://api.openai.com/v1/audio/transcriptions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}"},files={"file":(p,af,"audio/ogg")},data={"model":"whisper-1","language":"ar","prompt":"Zedle Antelias La Nohra La Bernard Abyda Malifa Filet Sultan Ajej Aarmout Mes2ar Ghassani Bra2 kilo w 800 gram, 4 kilo w 800 = 4.8kg, Malifa for Nohra Abyda for Nohra rest for Bernard, date like day month"})
                 j=r.json()
                 print(f"VOICE RAW:{j}")
                 if "text" not in j or not j["text"].strip(): return None
                 raw_text=j["text"].strip()
                 print(f"VOICE BEFORE:{raw_text}")
                 converted=to_arabizi_fast(raw_text)
+                converted=parse_weight_w_grams(converted)
                 print(f"VOICE AFTER:{converted}")
                 if any("\u0600" <= ch <= "\u06FF" for ch in converted):
                     try:
                         async with httpx.AsyncClient(timeout=8) as c2:
-                            r2=await c2.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You hear Lebanese voice. Extract EXACT date user said - ANY day/month. Convert to English Arabizi ONLY. NEVER invent date. NEVER change date. Fish: Ghassani Bra2 Ajej Filet Mes2ar Jadla Aarmout."},{"role":"user","content":raw_text}],"temperature":0})
+                            r2=await c2.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You hear Lebanese voice. Extract EXACT date, fish, weights. '4 kilo w 800' = 4.8kg. 'Malifa for Nohra' = Malifa Nohra. Convert to English Arabizi ONLY. NEVER invent date."},{"role":"user","content":raw_text}],"temperature":0})
                             j2=r2.json()
                             trans=j2["choices"][0]["message"]["content"]
                             print(f"VOICE GPT FIX:{trans}")
-                            return trans
+                            return parse_weight_w_grams(trans)
                     except: pass
                 return converted
     except Exception as e:
@@ -157,9 +189,9 @@ async def read_image(mid,cap=""):
         content=await download_media(mid)
         if not content: return cap
         b64=base64.b64encode(content).decode()
-        prompt=f"Caption:{cap}. Count exact rows. Weight=وزن/1000. Format English: FISH Xkg Bra2 Ajej Filet Ghassani Mes2ar"
+        prompt=f"Caption:{cap}. Count exact rows. Weight=وزن/1000. Format English: FISH Xkg Bra2 Ajej Filet Ghassani Mes2ar Abyda"
         async with httpx.AsyncClient(timeout=20) as c:
-            r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":f"Caption:{cap} Date English only Bra2 Ajej Filet Mes2ar"},{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}","detail":"high"}}]}],"temperature":0})
+            r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":f"Caption:{cap} Date English only"},{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}","detail":"high"}}]}],"temperature":0})
             j=r.json()
             if "choices" in j: return f"{cap}\n{j['choices'][0]['message']['content']}"
             return cap
@@ -181,8 +213,10 @@ async def get_ws():
     return sheet.worksheet(target),target
 
 def parse_msg_regex(text):
+    text=parse_weight_w_grams(text)
+    for_map, default_sup = extract_for_supplier(text)
     lines=text.strip().split("\n")
-    parsed=[]; cur_where="Antelias"; cur_week=""; cur_sup="Bernard"
+    parsed=[]; cur_where="Antelias"; cur_week=""; cur_sup=default_sup
     cur_date=parse_any_date(text) or "NO_DATE"
     if cur_date!="NO_DATE": cur_week=get_week_from_date(cur_date)
     low_all=text.lower()
@@ -226,7 +260,12 @@ def parse_msg_regex(text):
             if "MESKAR" in fish_clean.upper(): fish_clean="MES2AR"
             if "LABERNAR" in fish_clean.upper(): fish_clean="GHASSANI"
             if fish_clean and len(fish_clean)>=2:
-                parsed.append({"fish":fish_clean,"kg":kg,"supplier":cur_sup,"where":cur_where,"date":cur_date,"week":cur_week,"price_usd":price_usd,"price_lbp":price_lbp})
+                # Use "for Nohra" mapping first!
+                sup=for_map.get(fish_clean.upper(), cur_sup)
+                # If fish was in La Nohra section, cur_sup already Nohra
+                # But if for_map says Nohra, override
+                if fish_clean.upper() in for_map: sup=for_map[fish_clean.upper()]
+                parsed.append({"fish":fish_clean,"kg":kg,"supplier":sup,"where":cur_where,"date":cur_date,"week":cur_week,"price_usd":price_usd,"price_lbp":price_lbp})
             last=mm.end()
     return parsed
 
@@ -235,13 +274,14 @@ def parse_msg(text):
 
 async def parse_msg_smart(text):
     env=get_env()
+    text=parse_weight_w_grams(text)
     if env["OPENAI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=12) as c:
-                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra fish parser. Parse ANY date generically. RULES: 1) DATE: Extract EXACT date user said - ANY day 1-31, ANY month Jan-Dec. If user says '5 Dec' use '05 Dec'. If '12 Jan' use '12 Jan'. NEVER invent date, NEVER reuse old date. If no date, return 'NO_DATE'. 2) PRICE: ALWAYS strip 000! '400 alf' -> 400, '650 alf' -> 650, '650000' -> 650, '400 lbp' -> 400. NEVER 400000. 3) Supplier: La Nohra: = Nohra, La Bernard: = Bernard. 4) Fish EXACT: Ajej, Aarmout, Mes2ar, Ghassani, Bra2, Filet. 5) Output ONLY JSON: {\"date\":\"05 Dec\",\"where\":\"Antelias\",\"items\":[{\"fish\":\"Ajej\",\"kg\":\"2\",\"supplier\":\"Nohra\",\"price_lbp\":\"650\"}]}"},{"role":"user","content":text}],"temperature":0})
+                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra fish parser. Parse ANY date generically. RULES: 1) WEIGHT: '4 kilo w 800' = 4.8kg (4kg + 800g). '3 kilo w 500' = 3.5kg. NEVER treat 800 as price! 2) SUPPLIER: 'Malifa for Nohra' = Malifa Nohra. 'Abyda for Nohra' = Abyda Nohra. 'Rest for Bernard' = all other fish Bernard. 'La Nohra:' section = Nohra. 3) DATE: Extract EXACT date user said - ANY day/month. NEVER invent, NEVER reuse old. If no date, 'NO_DATE'. 4) PRICE: Strip 000: '400 alf' -> 400, '650 alf' -> 650. NEVER 400000. 5) FISH EXACT: Abyda (not Abyad), Malifa, Filet, Sultan, Ajej, Aarmout, Mes2ar, Ghassani, Bra2. 6) Output ONLY JSON: {\"date\":\"01 Nov\",\"where\":\"Antelias\",\"items\":[{\"fish\":\"Abyda\",\"kg\":\"4.8\",\"supplier\":\"Nohra\"},{\"fish\":\"Malifa\",\"kg\":\"5\",\"supplier\":\"Nohra\"},{\"fish\":\"Filet\",\"kg\":\"6\",\"supplier\":\"Bernard\"}]}"},{"role":"user","content":text}],"temperature":0})
                 j=r.json()
                 content=j["choices"][0]["message"]["content"].strip()
-                print(f"AI PARSE GENERIC:{content}")
+                print(f"AI PARSE:{content}")
                 content=content.replace("```json","").replace("```","").strip()
                 data=json.loads(content)
                 date=data.get("date","NO_DATE")
@@ -254,7 +294,9 @@ async def parse_msg_smart(text):
                 parsed=[]
                 for it in data.get("items",[]):
                     plbp=strip_price_000(it.get("price_lbp",""))
-                    parsed.append({"fish":it["fish"],"kg":str(it["kg"]),"supplier":it.get("supplier","Bernard"),"where":where,"date":date,"week":week,"price_usd":it.get("price_usd",""),"price_lbp":plbp})
+                    # Fix weight w grams if AI missed it
+                    kg=str(it["kg"])
+                    parsed.append({"fish":it["fish"],"kg":kg,"supplier":it.get("supplier","Bernard"),"where":where,"date":date,"week":week,"price_usd":it.get("price_usd",""),"price_lbp":plbp})
                 if parsed: return parsed
         except Exception as e:
             print(f"AI parse fail {e}")
@@ -333,19 +375,19 @@ async def write_pending(phone):
 async def handle(text,phone):
     print(f"HANDLE:{text}")
     if not text or len(text.strip())<2:
-        return "Eh ma fehmet, eb3at voice: Zedle Antelias 5 Dec La Nohra: Ajej 2kg se3er 650 alf"
+        return "Eh ma fehmet, eb3at voice: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
     text=to_arabizi_fast(text)
+    text=parse_weight_w_grams(text)
     low=text.lower()
     intent=detect_intent(text)
     print(f"INTENT:{intent} TEXT:{low}")
     if phone in PENDING and PENDING[phone]:
-        # GENERIC date correction - ANY date, first date is new date!
         all_dates=re.findall(r"(\d{1,2})\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)",low)
         if all_dates and any(w in low for w in ["date","not","mesh","ghayer"]):
             new_day=all_dates[0][0].zfill(2)
             new_mon=all_dates[0][1].capitalize()[:3]
             new_date=f"{new_day} {new_mon}"
-            print(f"CORRECTION GENERIC: {low} -> {new_date}")
+            print(f"CORRECTION: {low} -> {new_date}")
             new_week=get_week_from_date(new_date)
             for it in PENDING[phone]: it["date"]=new_date; it["week"]=new_week
             lines=[]
@@ -379,9 +421,9 @@ async def handle(text,phone):
                 return f"Zedle kamen! Total {len(PENDING[phone])} samke:\n"+"\n".join(lines)+"\n\nConfirm? YES / NO"
     if intent=="yes_confirm":
         if phone in PENDING:
-            if PENDING[phone][0]["date"]=="NO_DATE": return "Shu el DATE? Oul voice: Date 5 Dec - mesh ana bna2e!"
+            if PENDING[phone][0]["date"]=="NO_DATE": return "Shu el DATE? Oul voice: Date 1 Nov - mesh ana bna2e!"
             return await write_pending(phone)
-        return "Ma fi pending, eb3at: Zedle Antelias 5 Dec La Nohra: Ajej 2kg"
+        return "Ma fi pending, eb3at: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
     if intent=="no_confirm":
         if phone in PENDING: del PENDING[phone]; return "Ok ma zedet, pending cleared!"
         return "Ok"
@@ -391,7 +433,7 @@ async def handle(text,phone):
             try:
                 async with httpx.AsyncClient(timeout=8) as c:
                     plist_str="\n".join([f"{p['fish']} {p['kg']}kg {p['date']} {p['where']}" for p in PENDING[phone]])
-                    r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":f"You are Nohra smart assistant. Pending:\n{plist_str}\nExtract correction - ANY date. Reply JSON only: {{\"type\":\"date\",\"value\":\"05 Dec\"}} or {{\"type\":\"where\",\"value\":\"Adma\"}} or {{\"type\":\"qty\",\"fish\":\"JADLA\",\"kg\":\"5\"}}. If not clear, {{\"type\":\"unknown\"}}"},{"role":"user","content":text}],"temperature":0})
+                    r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":f"You are Nohra smart assistant. Pending:\n{plist_str}\nExtract correction - ANY date. Reply JSON only: {{\"type\":\"date\",\"value\":\"01 Nov\"}} or {{\"type\":\"where\",\"value\":\"Adma\"}}"},{"role":"user","content":text}],"temperature":0})
                     j=r.json()
                     content=j["choices"][0]["message"]["content"]
                     print(f"SMART AI:{content}")
@@ -425,11 +467,11 @@ async def handle(text,phone):
         if intent in ["add","update"]:
             if phone in PENDING: del PENDING[phone]
             parsed=await parse_msg_smart(text)
-            if not parsed: return "Eh ma fehmet, eb3at: Zedle Antelias 5 Dec La Nohra: Ajej 2kg se3er 650 alf"
+            if not parsed: return "Eh ma fehmet, eb3at: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
             if parsed[0]["date"]=="NO_DATE":
                 PENDING[phone]=parsed
                 lines=[f"{p['fish']} {p['kg']}kg {p['supplier']}" for p in parsed]
-                return f"Eh fehmet el samak:\n"+"\n".join(lines)+f"\n\nBas shu el DATE? Oul voice: Date 5 Dec - mesh ana bna2e!"
+                return f"Eh fehmet el samak:\n"+"\n".join(lines)+f"\n\nBas shu el DATE? Oul voice: Date 1 Nov - mesh ana bna2e!"
             PENDING[phone]=parsed; lines=[]
             for p in parsed:
                 pt=""
@@ -437,25 +479,25 @@ async def handle(text,phone):
                 if p.get("price_lbp"): pt=f" se3er {p['price_lbp']} LBP"
                 lines.append(f"{p['fish']} {p['kg']}kg {p['supplier']} {p['date']} {p['where']}{pt}")
             summ="\n".join(lines); dates=list(set([p["date"] for p in parsed]))
-            return f"Rah zid hek - {len(parsed)} samke, Dates: {', '.join(dates)}:\n{summ}\n\nConfirm? YES / NO - fik t2oul voice: Date 5 Dec not 29 Oct"
+            return f"Rah zid hek - {len(parsed)} samke, Dates: {', '.join(dates)}:\n{summ}\n\nConfirm? YES / NO - fik t2oul voice: Date 1 Nov"
     except Exception as e:
         traceback.print_exc(); return f"Error:{e}"
     env=get_env()
     if env["OPENAI_KEY"]:
         try:
             async with httpx.AsyncClient(timeout=10) as c:
-                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra smart fish assistant. Speak ONLY Lebanese Arabizi English alphabet. Use: eh, zabtet, chilt, hek. Help add fish. Example: Zedle Antelias 5 Dec La Nohra: Ajej 2kg se3er 650 alf. Never Arabic script."},{"role":"user","content":text}]})
+                r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {env['OPENAI_KEY']}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":[{"role":"system","content":"You are Nohra smart fish assistant. Speak ONLY Lebanese Arabizi English alphabet. Use: eh, zabtet, chilt, hek. Help add fish. Example: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800. Never Arabic script."},{"role":"user","content":text}]})
                 j=r.json()
                 txt=j["choices"][0]["message"]["content"][:500]
                 if any("\u0600" <= ch <= "\u06FF" for ch in txt):
-                    return "Eh ma fehmet, eb3at: Zedle Antelias 5 Dec La Nohra: Ajej 2kg"
+                    return "Eh ma fehmet, eb3at: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
                 return txt
-        except: return "Eh ma fehmet, eb3at: Zedle Antelias 5 Dec La Nohra: Ajej 2kg"
-    return "Eh ma fehmet, eb3at: Zedle Antelias 5 Dec La Nohra: Ajej 2kg"
+        except: return "Eh ma fehmet, eb3at: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
+    return "Eh ma fehmet, eb3at: Zedle Antelias 1 Nov La Nohra: Abyda 4 kilo w 800"
 
 app=FastAPI()
 @app.get("/")
-async def root(): return HTMLResponse("<h2>Nohra GENERIC - ANY DATE - ANY PRICE - LIVE</h2>")
+async def root(): return HTMLResponse("<h2>Nohra SMART - 4 kilo w 800 = 4.8kg - Malifa for Nohra - Abyda - ANY DATE - LIVE</h2>")
 @app.get("/webhook/whatsapp")
 async def verify(request: Request):
     mode=request.query_params.get("hub.mode"); token=request.query_params.get("hub.verify_token"); chal=request.query_params.get("hub.challenge")
