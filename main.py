@@ -19,7 +19,7 @@ def get_env():
 FISH_MAP={
 "عزتلي":"Azatli","غساني":"Ghassani","غزال":"Ghazal","فيران":"Firan","بزري":"Bezri",
 "فيلي":"Filet","فيله":"Filet","فيليه":"Filet","أصفر":"Asfar","اصفر":"Asfar",
-"مليفة":"Malifa","جربيدي":"Jarbide","برا":"Bra2","براق":"Bra2","برا بلادي":"Bra Balade",
+"مليفة":"Malifa","جربيدي":"Jarbide","برا":"Bra2","براق":"Bra2","برا بلادي":"Bra2 Balade",
 "قريدس":"Jrawe","جراوي":"Jrawe","سلطان":"Sultan","غبوس":"Ghobbos","سارغوس":"Sarghous",
 "ابيض":"Abyad","ابيضا":"Abyda","ابيدا":"Abyda","ارموط":"Aarmout","لوء صخري":"Loq Sakhri","لو صخري":"Loq Sakhri",
 "عجيج":"Ajej","عجاج":"Ajej","اجيج":"Ajej","اجاج":"Ajej","جدلا":"Jadla","جادلا":"Jadla",
@@ -27,7 +27,7 @@ FISH_MAP={
 }
 ARABIC_NUMS={"٠":"0","١":"1","٢":"2","٣":"3","٤":"4","٥":"5","٦":"6","٧":"7","٨":"8","٩":"9","۰":"0","۱":"1","۲":"2","۳":"3","۴":"4","۵":"5","۶":"6","۷":"7","۸":"8","۹":"9"}
 ARABIC_MONTHS={"اكتوبر":"Oct","أكتوبر":"Oct","تشرين":"Oct","نوفمبر":"Nov","تشرين الثاني":"Nov","ديسمبر":"Dec","كانون الاول":"Dec","يناير":"Jan","كانون الثاني":"Jan","سبتمبر":"Sep","ايلول":"Sep","اغسطس":"Aug","يوليو":"Jul","تموز":"Jul","يونيو":"Jun","مايو":"May","ابريل":"Apr","مارس":"Mar","فبراير":"Feb"}
-EXACT_LOCK={"BRA":"BRA2","BRA2":"BRA2","BRA BALADE":"BRA BALADE","AJAJ":"AJEJ","AJEJ":"AJEJ","FILY":"FILET","FILET":"FILET","MESKAR":"MES2AR","MES2AR":"MES2AR","LABERNAR":"GHASSANI","GHASSANI":"GHASSANI","ABYDA":"ABYDA","ABYAD":"ABYAD"}
+EXACT_LOCK={"BRA":"BRA2","BRA2":"BRA2","BRA2 BALADE":"BRA BALADE","AJAJ":"AJEJ","AJEJ":"AJEJ","FILY":"FILET","FILET":"FILET","MESKAR":"MES2AR","MES2AR":"MES2AR","LABERNAR":"GHASSANI","GHASSANI":"GHASSANI","ABYDA":"ABYDA","ABYAD":"ABYAD"}
 
 def to_arabizi_fast(text):
     for ar,en in ARABIC_NUMS.items(): text=text.replace(ar,en)
